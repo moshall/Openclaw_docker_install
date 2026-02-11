@@ -278,7 +278,9 @@ run_gateway_container() {
   local data_dir="$5"
   local enable_bin_persist="${6:-${DEFAULT_ENABLE_BIN_PERSIST}}"
   local enable_env_persist="${7:-${DEFAULT_ENABLE_ENV_PERSIST}}"
+  local extra_ports="${8:-}"
   local volume_args=()
+  local port_args=("-p" "${host_port}:${container_port}")
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
     run_cmd mkdir -p "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/root-go-bin"
@@ -288,24 +290,247 @@ run_gateway_container() {
 
   if [[ "${enable_env_persist}" == "1" ]]; then
     run_cmd mkdir -p "${data_dir}/runtime/usr-local-go" \
+      "${data_dir}/runtime/usr-local-lib-node-modules" \
+      "${data_dir}/runtime/root-local-lib" \
       "${data_dir}/runtime/root-local-share-uv" \
       "${data_dir}/runtime/root-local-pipx" \
       "${data_dir}/runtime/root-local-share-pipx"
     volume_args+=("-v" "${data_dir}/runtime/usr-local-go:/usr/local/go")
+    volume_args+=("-v" "${data_dir}/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules")
+    volume_args+=("-v" "${data_dir}/runtime/root-local-lib:/root/.local/lib")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv")
     volume_args+=("-v" "${data_dir}/runtime/root-local-pipx:/root/.local/pipx")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx")
   fi
 
+  if [[ -n "${extra_ports}" ]]; then
+    local mapping
+    for mapping in ${extra_ports}; do
+      [[ -z "${mapping}" ]] && continue
+      port_args+=("-p" "${mapping}")
+    done
+  fi
+
   run_cmd docker run -d \
     --name "${name}" \
     --restart "${DEFAULT_RESTART_POLICY}" \
-    -p "${host_port}:${container_port}" \
+    "${port_args[@]}" \
     -v "${data_dir}:/root/.openclaw" \
     "${volume_args[@]}" \
     --add-host=host.docker.internal:host-gateway \
     "${image}" \
     openclaw gateway run
+}
+
+normalize_extra_ports() {
+  local raw="$1"
+  local main_host_port="$2"
+  local main_container_port="$3"
+  local normalized=""
+  local token
+
+  raw="${raw//,/ }"
+  raw=$(echo "${raw}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  [[ -z "${raw}" ]] && {
+    echo ""
+    return 0
+  }
+
+  for token in ${raw}; do
+    token=$(echo "${token}" | tr '[:upper:]' '[:lower:]')
+    if [[ ! "${token}" =~ ^[0-9]+:[0-9]+(/(tcp|udp))?$ ]]; then
+      log_error "扩展端口格式无效: ${token}（示例: 5001:5001 或 6000:6000/udp）"
+      return 1
+    fi
+
+    local host_part="${token%%:*}"
+    local rest="${token#*:}"
+    local container_part="${rest%%/*}"
+    local proto="tcp"
+    if [[ "${rest}" == *"/"* ]]; then
+      proto="${rest##*/}"
+    fi
+
+    # Skip duplicates with primary mapping.
+    if [[ "${host_part}" == "${main_host_port}" && "${container_part}" == "${main_container_port}" && "${proto}" == "tcp" ]]; then
+      continue
+    fi
+
+    local canonical="${host_part}:${container_part}"
+    [[ "${proto}" != "tcp" ]] && canonical="${canonical}/${proto}"
+
+    case " ${normalized} " in
+      *" ${canonical} "*) ;;
+      *) normalized="${normalized}${normalized:+ }${canonical}" ;;
+    esac
+  done
+
+  echo "${normalized}"
+}
+
+copy_dir_from_container_to_host() {
+  local container_name="$1"
+  local src_dir="$2"
+  local dest_dir="$3"
+  local label="$4"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd mkdir -p "${dest_dir}"
+    run_cmd docker cp "${container_name}:${src_dir}/." "${dest_dir}/"
+    return 0
+  fi
+
+  if ! container_exists "${container_name}"; then
+    log_info "[迁移] 容器 ${container_name} 不存在，跳过 ${label}"
+    return 0
+  fi
+
+  if ! docker exec "${container_name}" sh -lc "test -d '${src_dir}'" >/dev/null 2>&1; then
+    log_info "[迁移] 未检测到 ${src_dir}，跳过 ${label}"
+    return 0
+  fi
+
+  run_cmd mkdir -p "${dest_dir}"
+  run_cmd docker cp "${container_name}:${src_dir}/." "${dest_dir}/"
+}
+
+normalize_path_for_compare() {
+  local path="$1"
+  while [[ "${path}" != "/" && "${path}" == */ ]]; do
+    path="${path%/}"
+  done
+  printf '%s\n' "${path}"
+}
+
+get_mount_source_for_destination() {
+  local container_name="$1"
+  local destination="$2"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+  if ! container_exists "${container_name}"; then
+    return 1
+  fi
+
+  local source
+  source=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"${destination}\"}}{{.Source}}{{end}}{{end}}" "${container_name}" 2>/dev/null || true)
+  if [[ -n "${source}" ]]; then
+    printf '%s\n' "${source}"
+    return 0
+  fi
+  return 1
+}
+
+validate_runtime_target_path() {
+  local data_dir="$1"
+  local target_path="$2"
+  case "${target_path}" in
+    "${data_dir}/runtime/"*) return 0 ;;
+    *)
+      log_error "[迁移] 目标路径不在 runtime 目录下，已拒绝: ${target_path}"
+      return 1
+      ;;
+  esac
+}
+
+should_skip_migration_for_path() {
+  local container_name="$1"
+  local destination="$2"
+  local target_source="$3"
+  local label="$4"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+
+  local current_source
+  current_source=$(get_mount_source_for_destination "${container_name}" "${destination}" || true)
+  if [[ -z "${current_source}" ]]; then
+    return 1
+  fi
+
+  local norm_current norm_target
+  norm_current=$(normalize_path_for_compare "${current_source}")
+  norm_target=$(normalize_path_for_compare "${target_source}")
+
+  if [[ "${norm_current}" == "${norm_target}" ]]; then
+    log_info "[迁移] ${label} 已持久化且路径一致，跳过迁移"
+    return 0
+  fi
+
+  log_info "[迁移] ${label} 检测到持久化路径变化：${norm_current} -> ${norm_target}，将执行迁移"
+  return 1
+}
+
+pre_upgrade_migrate_runtime_data() {
+  local container_name="$1"
+  local data_dir="$2"
+  local enable_bin_persist="$3"
+  local enable_env_persist="$4"
+
+  if [[ "${enable_bin_persist}" != "1" && "${enable_env_persist}" != "1" ]]; then
+    log_info "[迁移] 本次未启用 runtime 持久化，跳过升级前迁移"
+    return 0
+  fi
+
+  if [[ "${DRY_RUN}" -eq 0 ]] && ! container_exists "${container_name}"; then
+    log_info "[迁移] 未找到历史容器，跳过升级前迁移"
+    return 0
+  fi
+
+  log_info "[迁移] 开始执行升级前 runtime 数据迁移（删除旧容器前）"
+
+  local target_root_local_bin="${data_dir}/runtime/root-local-bin"
+  local target_root_go_bin="${data_dir}/runtime/root-go-bin"
+  local target_usr_local_go="${data_dir}/runtime/usr-local-go"
+  local target_usr_local_lib_node_modules="${data_dir}/runtime/usr-local-lib-node-modules"
+  local target_root_local_lib="${data_dir}/runtime/root-local-lib"
+  local target_root_local_share_uv="${data_dir}/runtime/root-local-share-uv"
+  local target_root_local_pipx="${data_dir}/runtime/root-local-pipx"
+  local target_root_local_share_pipx="${data_dir}/runtime/root-local-share-pipx"
+
+  validate_runtime_target_path "${data_dir}" "${target_root_local_bin}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_go_bin}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_usr_local_go}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_usr_local_lib_node_modules}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_local_lib}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_local_share_uv}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_local_pipx}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_local_share_pipx}" || return 1
+
+  if [[ "${enable_bin_persist}" == "1" ]]; then
+    if ! should_skip_migration_for_path "${container_name}" "/root/.local/bin" "${target_root_local_bin}" "bin:/root/.local/bin"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.local/bin" "${target_root_local_bin}" "bin:/root/.local/bin" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/go/bin" "${target_root_go_bin}" "bin:/root/go/bin"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/go/bin" "${target_root_go_bin}" "bin:/root/go/bin" || return 1
+    fi
+  fi
+
+  if [[ "${enable_env_persist}" == "1" ]]; then
+    if ! should_skip_migration_for_path "${container_name}" "/usr/local/go" "${target_usr_local_go}" "env:/usr/local/go"; then
+      copy_dir_from_container_to_host "${container_name}" "/usr/local/go" "${target_usr_local_go}" "env:/usr/local/go" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules"; then
+      copy_dir_from_container_to_host "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.local/lib" "${target_root_local_lib}" "env:/root/.local/lib"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.local/lib" "${target_root_local_lib}" "env:/root/.local/lib" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.local/share/uv" "${target_root_local_share_uv}" "env:/root/.local/share/uv"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.local/share/uv" "${target_root_local_share_uv}" "env:/root/.local/share/uv" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.local/pipx" "${target_root_local_pipx}" "env:/root/.local/pipx"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.local/pipx" "${target_root_local_pipx}" "env:/root/.local/pipx" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx" || return 1
+    fi
+  fi
+
+  log_info "[迁移] 升级前 runtime 数据迁移完成"
+  return 0
 }
 
 install_easy_cli() {
@@ -555,6 +780,29 @@ MODE="__MODE__"
 DEPS_SPEC="__DEPS__"
 
 has() { command -v "$1" >/dev/null 2>&1; }
+has_effective() {
+  local cmd="$1"
+  if has "$cmd"; then
+    return 0
+  fi
+  case "$cmd" in
+    go)
+      [ -x /usr/local/go/bin/go ] || [ -x /root/go/bin/go ] || [ -x /usr/local/bin/go ]
+      ;;
+    uv)
+      [ -x /root/.local/bin/uv ] || [ -x /usr/local/bin/uv ] || [ -x /usr/bin/uv ]
+      ;;
+    npm)
+      [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ]
+      ;;
+    python3)
+      [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 normalize_deps() {
   echo "$1" | tr ',' ' ' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
 }
@@ -630,6 +878,9 @@ fix_go_path() {
   sync_user_bin_dir /root/go/bin
 }
 
+# Best-effort PATH repair for "installed but not in PATH" cases (especially go/uv)
+ensure_path_now /root/.local/bin /usr/local/bin /usr/local/go/bin /root/go/bin
+
 is_mountpoint_path() {
   local p="$1"
   [ -n "$p" ] || return 1
@@ -653,7 +904,7 @@ clear_dir_contents() {
 
 echo "[deps] checking: ${DEPS}"
 for cmd in $DEPS; do
-  if has "$cmd"; then
+  if has_effective "$cmd"; then
     echo "FOUND:$cmd"
   else
     echo "MISSING:$cmd"
@@ -668,12 +919,12 @@ need_node=0
 need_python=0
 need_uv=0
 need_go=0
-contains_dep npm && ! has npm && need_node=1
-if ! has python3 && (contains_dep python3 || contains_dep uv); then
+contains_dep npm && ! has_effective npm && need_node=1
+if ! has_effective python3 && (contains_dep python3 || contains_dep uv); then
   need_python=1
 fi
-contains_dep uv && ! has uv && need_uv=1
-contains_dep go && ! has go && need_go=1
+contains_dep uv && ! has_effective uv && need_uv=1
+contains_dep go && ! has_effective go && need_go=1
 
 if [ "$need_node" -eq 0 ] && [ "$need_python" -eq 0 ] && [ "$need_uv" -eq 0 ] && [ "$need_go" -eq 0 ]; then
   echo "[deps] all required runtimes already installed"
@@ -895,7 +1146,7 @@ sync_user_bin_dir /root/go/bin
 
 echo "[deps] final status:"
 for cmd in $DEPS; do
-  if has "$cmd"; then
+  if has_effective "$cmd"; then
     echo "FOUND:$cmd"
   else
     echo "MISSING:$cmd"
@@ -949,22 +1200,92 @@ detect_existing_ports() {
     return
   fi
 
-  local line
-  line=$(docker port "${name}" 2>/dev/null | head -n 1 || true)
-  if [[ -z "${line}" ]]; then
+  local output
+  output=$(docker port "${name}" 2>/dev/null || true)
+  if [[ -z "${output}" ]]; then
     printf '%s,%s\n' "${fallback_host}" "${fallback_container}"
     return
   fi
 
+  local first_line=""
+  local first_tcp_line=""
+  local preferred_line=""
+  local line
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    [[ -z "${first_line}" ]] && first_line="${line}"
+    if [[ "${line}" == *"/tcp"* && -z "${first_tcp_line}" ]]; then
+      first_tcp_line="${line}"
+    fi
+    if [[ "${line}" == "${fallback_container}/tcp"* ]]; then
+      preferred_line="${line}"
+      break
+    fi
+  done <<< "${output}"
+
+  local chosen_line="${preferred_line}"
+  [[ -z "${chosen_line}" ]] && chosen_line="${first_tcp_line}"
+  [[ -z "${chosen_line}" ]] && chosen_line="${first_line}"
+  [[ -z "${chosen_line}" ]] && {
+    printf '%s,%s\n' "${fallback_host}" "${fallback_container}"
+    return
+  }
+
   local container_port host_port
-  container_port=$(printf '%s' "${line}" | sed -E 's#^([0-9]+)/tcp.*#\1#')
-  host_port=$(printf '%s' "${line}" | sed -E 's#.*:([0-9]+)$#\1#')
+  container_port=$(printf '%s' "${chosen_line}" | sed -E 's#^([0-9]+)/[a-z]+.*#\1#')
+  host_port=$(printf '%s' "${chosen_line}" | sed -E 's#.*:([0-9]+)$#\1#')
 
   if [[ -z "${container_port}" || -z "${host_port}" ]]; then
     printf '%s,%s\n' "${fallback_host}" "${fallback_container}"
   else
     printf '%s,%s\n' "${host_port}" "${container_port}"
   fi
+}
+
+detect_existing_extra_ports() {
+  local name="$1"
+  local main_host_port="$2"
+  local main_container_port="$3"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo ""
+    return
+  fi
+
+  local output
+  output=$(docker port "${name}" 2>/dev/null || true)
+  [[ -z "${output}" ]] && {
+    echo ""
+    return
+  }
+
+  local result=""
+  local line
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+
+    local container_proto="${line%% ->*}"   # e.g. 18789/tcp
+    local container_part="${container_proto%%/*}"
+    local proto="${container_proto##*/}"
+    local host_part="${line##*:}"           # last :<port>
+    host_part="${host_part//[$'\r\n']}"
+
+    [[ -z "${container_part}" || -z "${host_part}" ]] && continue
+    [[ ! "${container_part}" =~ ^[0-9]+$ || ! "${host_part}" =~ ^[0-9]+$ ]] && continue
+
+    if [[ "${host_part}" == "${main_host_port}" && "${container_part}" == "${main_container_port}" && "${proto}" == "tcp" ]]; then
+      continue
+    fi
+
+    local token="${host_part}:${container_part}"
+    [[ "${proto}" != "tcp" ]] && token="${token}/${proto}"
+    case " ${result} " in
+      *" ${token} "*) ;;
+      *) result="${result}${result:+ }${token}" ;;
+    esac
+  done <<< "${output}"
+
+  echo "${result}"
 }
 
 is_container_running() {
@@ -1009,6 +1330,8 @@ detect_persist_choice_from_container() {
 
   if [[ "${target}" == "env" ]]; then
     if has_mount_destination "${name}" "/usr/local/go" || \
+      has_mount_destination "${name}" "/usr/local/lib/node_modules" || \
+      has_mount_destination "${name}" "/root/.local/lib" || \
       has_mount_destination "${name}" "/root/.local/share/uv" || \
       has_mount_destination "${name}" "/root/.local/pipx" || \
       has_mount_destination "${name}" "/root/.local/share/pipx"; then
@@ -1040,8 +1363,99 @@ detect_installed_deps_in_container() {
   fi
 
   local detected
-  detected=$(docker exec "${name}" sh -lc 'for c in npm uv go python3; do command -v "$c" >/dev/null 2>&1 && printf "%s " "$c"; done' 2>/dev/null || true)
+  detected=$(docker exec "${name}" sh -lc '
+for c in npm uv go python3; do
+  if command -v "$c" >/dev/null 2>&1; then
+    printf "%s " "$c"
+    continue
+  fi
+  case "$c" in
+    go)
+      [ -x /usr/local/go/bin/go ] || [ -x /root/go/bin/go ] || [ -x /usr/local/bin/go ] && printf "%s " "$c"
+      ;;
+    uv)
+      [ -x /root/.local/bin/uv ] || [ -x /usr/local/bin/uv ] || [ -x /usr/bin/uv ] && printf "%s " "$c"
+      ;;
+    npm)
+      [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ] && printf "%s " "$c"
+      ;;
+    python3)
+      [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ] && printf "%s " "$c"
+      ;;
+  esac
+done' 2>/dev/null || true)
   normalize_dep_list "${detected}"
+}
+
+print_upgrade_discovery_summary() {
+  local name="$1"
+  local data_dir="$2"
+
+  local exists_text="否"
+  local runtime_dir_text="否"
+  local deps_text="未知"
+  local bin_mounted="否"
+  local env_mounted="否"
+  local node_mod_mounted="否"
+  local py_user_lib_mounted="否"
+
+  if container_exists "${name}"; then
+    exists_text="是"
+    deps_text=$(detect_installed_deps_in_container "${name}")
+    [[ -z "${deps_text}" ]] && deps_text="未检测到"
+
+    if has_mount_destination "${name}" "/root/.local/bin" || has_mount_destination "${name}" "/root/go/bin"; then
+      bin_mounted="是"
+    fi
+
+    if has_mount_destination "${name}" "/usr/local/go" || \
+      has_mount_destination "${name}" "/root/.local/share/uv" || \
+      has_mount_destination "${name}" "/root/.local/pipx" || \
+      has_mount_destination "${name}" "/root/.local/share/pipx" || \
+      has_mount_destination "${name}" "/usr/local/lib/node_modules" || \
+      has_mount_destination "${name}" "/root/.local/lib"; then
+      env_mounted="是"
+    fi
+
+    has_mount_destination "${name}" "/usr/local/lib/node_modules" && node_mod_mounted="是"
+    has_mount_destination "${name}" "/root/.local/lib" && py_user_lib_mounted="是"
+  fi
+
+  [[ -d "${data_dir}/runtime" ]] && runtime_dir_text="是"
+
+  printf '\n=== 升级前环境检测 ===\n'
+  echo "容器存在: ${exists_text}"
+  echo "runtime 目录存在: ${runtime_dir_text} (${data_dir}/runtime)"
+  echo "已检测依赖: ${deps_text}"
+  echo "当前持久化挂载: bin=${bin_mounted}, env=${env_mounted}"
+  echo "扩展环境挂载: npm全局(node_modules)=${node_mod_mounted}, pip用户库(/root/.local/lib)=${py_user_lib_mounted}"
+
+  local -a hints=()
+  if [[ "${exists_text}" == "是" ]]; then
+    if dep_enabled "${deps_text}" "go" && [[ "${env_mounted}" != "是" ]]; then
+      hints+=("检测到 go 已安装但 env 未持久化，建议在本次升级开启 env。")
+    fi
+    if dep_enabled "${deps_text}" "uv" && [[ "${bin_mounted}" != "是" && "${env_mounted}" != "是" ]]; then
+      hints+=("检测到 uv 已安装但未持久化，建议在本次升级开启 bin/env。")
+    fi
+    if dep_enabled "${deps_text}" "npm" && [[ "${node_mod_mounted}" != "是" ]]; then
+      hints+=("检测到 npm 可用，若依赖 npm -g 包建议开启 env（持久化 /usr/local/lib/node_modules）。")
+    fi
+    if dep_enabled "${deps_text}" "python3" && [[ "${py_user_lib_mounted}" != "是" ]]; then
+      hints+=("检测到 python3 可用，若依赖 pip --user 包建议开启 env（持久化 /root/.local/lib）。")
+    fi
+  fi
+
+  if [[ "${#hints[@]}" -gt 0 ]]; then
+    echo "建议:"
+    local item
+    for item in "${hints[@]}"; do
+      echo " - ${item}"
+    done
+    echo "说明: 若本次开启了 bin/env，脚本会在删除旧容器前自动尝试迁移对应 runtime 数据。"
+  else
+    echo "建议: 当前状态无明显风险，可继续升级。"
+  fi
 }
 
 run_preflight_checks() {
@@ -1286,6 +1700,8 @@ runtime_persist_paths_desc() {
   fi
   if [[ "${env_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/usr-local-go")
+    lines+=("${data_dir}/runtime/usr-local-lib-node-modules")
+    lines+=("${data_dir}/runtime/root-local-lib")
     lines+=("${data_dir}/runtime/root-local-share-uv")
     lines+=("${data_dir}/runtime/root-local-pipx")
     lines+=("${data_dir}/runtime/root-local-share-pipx")
@@ -1350,6 +1766,7 @@ print_human_summary() {
   local gateway_bind="$8"
   local token="$9"
   local host_port="${10}"
+  local extra_ports="${11:-}"
 
   local access_host access_url
   access_host=$(detect_access_host)
@@ -1376,6 +1793,7 @@ print_human_summary() {
   echo "运行环境持久化目录：${runtime_paths}"
   echo "已安装运行环境：${deps_installed}"
   echo "网络绑定：$(gateway_bind_desc "${gateway_bind}")"
+  echo "扩展端口映射：$(value_or_unset "${extra_ports}")"
   if [[ -n "${token}" ]]; then
     echo "Token：${token}（请务必保留并妥善保存，是后续登录依据）"
   else
@@ -1411,6 +1829,7 @@ install_wizard() {
   local token_manual=""
   local deps_install_choice="1"
   local target_deps="${DEFAULT_DEP_SET}"
+  local extra_ports=""
 
   while true; do
     printf '\n=== 新装（清单模式） ===\n'
@@ -1434,6 +1853,7 @@ install_wizard() {
     else
       echo "10) 依赖清单: 未启用"
     fi
+    echo "11) 扩展端口映射: $(value_or_unset "${extra_ports}")"
     echo "c) 确认并执行安装"
     echo "q) 取消并返回"
 
@@ -1470,7 +1890,7 @@ install_wizard() {
       6)
         echo "持久化策略说明："
         echo "  - 保留命令入口（bin）：升级后命令更不容易丢失（推荐）"
-        echo "  - 保留运行环境（env）：升级后更少重装，但占用更高"
+        echo "  - 保留运行环境（env）：保留 go/uv/npm全局/pip用户环境，升级后更少重装，但占用更高"
         echo "是否启用 保留命令入口（bin）:"
         echo "  1) 是"
         echo "  2) 否"
@@ -1508,6 +1928,9 @@ install_wizard() {
           log_info "当前依赖补齐未启用，请先在第9项启用"
         fi
         ;;
+      11)
+        extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        ;;
       c|C)
         if [[ -z "${image}" ]]; then
           log_error "请先在第1项选择版本镜像"
@@ -1522,6 +1945,9 @@ install_wizard() {
         fi
         if [[ "${token_mode}" == "2" && -z "${token_manual}" ]]; then
           log_error "Token 为手动模式，请在第8项填写 token"
+          continue
+        fi
+        if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
           continue
         fi
 
@@ -1546,6 +1972,7 @@ install_wizard() {
         if [[ "${deps_install_choice}" == "1" ]]; then
           echo "依赖清单: ${target_deps}"
         fi
+        echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
         printf '确认执行? (y/N): '
         local confirm
         IFS= read -r confirm
@@ -1563,7 +1990,7 @@ install_wizard() {
         run_cmd docker pull "${image}"
         remove_container_if_exists "${name}"
         bootstrap_openclaw_config "${image}" "${data_dir}" "${container_port}" "${gateway_bind}" "${token}"
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
+        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}"
         save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
 
         local -a install_nonfatal_issues=()
@@ -1600,7 +2027,7 @@ install_wizard() {
           log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
         fi
         write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
-        print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}"
+        print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
         return
         ;;
       q|Q)
@@ -1619,17 +2046,6 @@ upgrade_wizard() {
   echo "按编号编辑，c确认执行，q返回主菜单"
   local name
   name=$(read_container_name "请输入要升级的容器名")
-
-  if is_container_running "${name}"; then
-    log_info "检测到容器 ${name} 正在运行，升级会中断当前任务。"
-    printf '是否继续升级? (y/N): '
-    local running_confirm
-    IFS= read -r running_confirm
-    if ! validate_yes_no "${running_confirm}"; then
-      log_info "已取消升级"
-      return
-    fi
-  fi
 
   local default_data_dir="/opt/1panel/apps/${name}"
   local detected_data_dir
@@ -1686,6 +2102,10 @@ upgrade_wizard() {
   fi
   local deps_repair_choice="1"
   local upgrade_dep_set="${saved_dep_set}"
+  local extra_ports
+  extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
+
+  print_upgrade_discovery_summary "${name}" "${data_dir}"
 
   while true; do
     printf '\n=== 升级清单：%s ===\n' "${name}"
@@ -1700,6 +2120,7 @@ upgrade_wizard() {
     else
       echo "7) 依赖清单: 未启用"
     fi
+    echo "8) 扩展端口映射: $(value_or_unset "${extra_ports}")"
     echo "c) 确认并执行升级"
     echo "q) 取消并返回"
 
@@ -1753,9 +2174,15 @@ upgrade_wizard() {
           log_info "当前依赖补齐未启用，请先在第6项启用"
         fi
         ;;
+      8)
+        extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        ;;
       c|C)
         if [[ -z "${image}" ]]; then
           log_error "请先在第1项选择目标版本镜像"
+          continue
+        fi
+        if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
           continue
         fi
         printf '\n--- 执行清单（确认前） ---\n'
@@ -1770,7 +2197,20 @@ upgrade_wizard() {
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${upgrade_dep_set}"
         fi
-        printf '确认执行安全升级? (y/N): '
+        echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+
+        local running_now
+        running_now="0"
+        if is_container_running "${name}"; then
+          running_now="1"
+          log_info "检测到容器 ${name} 正在运行，升级会中断当前任务。"
+        fi
+
+        if [[ "${running_now}" == "1" ]]; then
+          printf '容器正在运行，确认执行安全升级并中断当前任务? (y/N): '
+        else
+          printf '确认执行安全升级? (y/N): '
+        fi
         local confirm
         IFS= read -r confirm
         if ! validate_yes_no "${confirm}"; then
@@ -1785,8 +2225,14 @@ upgrade_wizard() {
 
         run_cmd mkdir -p "${data_dir}"
         run_cmd docker pull "${image}"
+
+        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"; then
+          log_error "升级前 runtime 数据迁移失败；为避免数据丢失，已中止本次升级"
+          continue
+        fi
+
         remove_container_if_exists "${name}"
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
+        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}"
         save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
 
         run_cmd docker ps --filter "name=${name}"
@@ -1827,7 +2273,7 @@ upgrade_wizard() {
         upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
         upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
         upgrade_token=$(detect_token_from_config "${data_dir}")
-        print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}"
+        print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}" "${extra_ports}"
         return
         ;;
       q|Q)
