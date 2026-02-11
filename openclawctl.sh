@@ -390,6 +390,7 @@ copy_dir_from_container_to_host() {
   local src_dir="$2"
   local dest_dir="$3"
   local label="$4"
+  local rc
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     run_cmd mkdir -p "${dest_dir}"
@@ -408,7 +409,34 @@ copy_dir_from_container_to_host() {
   fi
 
   run_cmd mkdir -p "${dest_dir}"
-  run_cmd docker cp "${container_name}:${src_dir}/." "${dest_dir}/"
+  set +e
+  print_cmd docker cp "${container_name}:${src_dir}/." "${dest_dir}/"
+  docker cp "${container_name}:${src_dir}/." "${dest_dir}/"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    return 0
+  fi
+
+  log_info "[迁移] ${label} 复制遇到兼容性问题（常见于符号链接，如 node_modules），已自动切换兼容迁移模式"
+  if ! docker exec "${container_name}" sh -lc 'command -v tar >/dev/null 2>&1'; then
+    log_error "[迁移] 容器内缺少 tar，无法执行兼容迁移: ${label}"
+    return 1
+  fi
+
+  local stream_script
+  stream_script="cd '${src_dir}' && tar -cf - ."
+  printf '[RUN] docker exec %s sh -lc <tar-stream-copy:%s> | tar -xf - -C %s\n' "${container_name}" "${src_dir}" "${dest_dir}"
+  set +e
+  docker exec "${container_name}" sh -lc "${stream_script}" | tar -xf - -C "${dest_dir}"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_error "[迁移] tar 流兼容迁移失败: ${label}"
+    return "${rc}"
+  fi
+  log_info "[迁移] 兼容迁移完成: ${label}"
+  return 0
 }
 
 normalize_path_for_compare() {
@@ -572,6 +600,7 @@ install_easy_cli() {
   else
     run_cmd git clone "${EASY_CLI_REPO}" "${target_dir}"
   fi
+  ensure_easy_cli_workspace_link "${data_dir}"
 }
 
 check_and_upgrade_easy_cli() {
@@ -589,7 +618,8 @@ check_and_upgrade_easy_cli() {
   fi
 
   if [[ ! -d "${target_dir}/.git" ]]; then
-    log_info "未发现 Easy CLI 仓库，跳过升级检查: ${target_dir}"
+    log_info "未发现 Easy CLI 仓库，开始自动安装: ${target_dir}"
+    install_easy_cli "${data_dir}"
     return
   fi
 
@@ -612,6 +642,7 @@ check_and_upgrade_easy_cli() {
   else
     log_info "Easy CLI 已是最新"
   fi
+  ensure_easy_cli_workspace_link "${data_dir}"
 }
 
 easy_cli_target_dir() {
@@ -619,9 +650,51 @@ easy_cli_target_dir() {
   echo "${data_dir}/software/easy_cli"
 }
 
+easy_cli_workspace_link_path() {
+  local data_dir="$1"
+  echo "${data_dir}/workspace/software/easy_cli"
+}
+
 easy_cli_legacy_dir() {
   local data_dir="$1"
   echo "${data_dir}/Openclaw_Easy_Cli"
+}
+
+ensure_easy_cli_workspace_link() {
+  local data_dir="$1"
+  local link_path
+  link_path=$(easy_cli_workspace_link_path "${data_dir}")
+  local parent_dir
+  parent_dir=$(dirname "${link_path}")
+  local rel_target="../../software/easy_cli"
+
+  run_cmd mkdir -p "${parent_dir}"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    if [[ ! -L "${link_path}" ]]; then
+      run_cmd ln -s "${rel_target}" "${link_path}"
+    fi
+    return
+  fi
+
+  if [[ -L "${link_path}" ]]; then
+    local current_target
+    current_target=$(readlink "${link_path}" || true)
+    if [[ "${current_target}" != "${rel_target}" ]]; then
+      run_cmd rm -f "${link_path}"
+      run_cmd ln -s "${rel_target}" "${link_path}"
+      log_info "已更新 Easy CLI workspace 兼容软链: ${link_path}"
+    fi
+    return
+  fi
+
+  if [[ -e "${link_path}" ]]; then
+    log_info "Easy CLI workspace 路径已存在非软链，跳过兼容软链创建: ${link_path}"
+    return
+  fi
+
+  run_cmd ln -s "${rel_target}" "${link_path}"
+  log_info "已创建 Easy CLI workspace 兼容软链: ${link_path}"
 }
 
 maybe_migrate_easy_cli_dir() {
@@ -1823,7 +1896,7 @@ print_human_summary() {
   echo "docker exec -it ${container_name} openclaw onboard"
   echo
   echo "EasyCli快捷配置三方模型："
-  echo "docker exec -it ${container_name} python3 /root/.openclaw/workspace/software/easy_cli/claw-commander.py"
+  echo "docker exec -it ${container_name} sh -lc 'python3 \"\$HOME/.openclaw/workspace/software/easy_cli/claw-commander.py\" || python3 \"\$HOME/.openclaw/software/easy_cli/claw-commander.py\"'"
   echo
   echo "后续可使用本脚本进行更新检查并升级程序"
   echo "持久化信息在升级后会继续保留"
