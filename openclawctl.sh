@@ -35,12 +35,96 @@ run_cmd_brief() {
   fi
 }
 
+run_optional_step() {
+  local label="$1"
+  shift
+  local rc
+  set +e
+  "$@"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_error "${label}失败（已跳过，不影响主流程）"
+    return "${rc}"
+  fi
+  return 0
+}
+
 log_info() {
   printf '[INFO] %s\n' "$*"
 }
 
 log_error() {
   printf '[ERROR] %s\n' "$*" >&2
+}
+
+json_escape() {
+  local raw="${1:-}"
+  printf '%s' "${raw}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'
+}
+
+join_with_semicolon() {
+  local out=""
+  local item
+  for item in "$@"; do
+    [[ -z "${item}" ]] && continue
+    if [[ -z "${out}" ]]; then
+      out="${item}"
+    else
+      out="${out}; ${item}"
+    fi
+  done
+  printf '%s\n' "${out}"
+}
+
+append_diagnostics_log() {
+  local data_dir="$1"
+  local message="$2"
+  local log_file="${data_dir}/runtime/diagnostics.log"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "诊断日志(预览): ${message}"
+    return
+  fi
+  run_cmd mkdir -p "${data_dir}/runtime"
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" >> "${log_file}"
+}
+
+write_last_report() {
+  local action="$1"
+  local status="$2"
+  local container_name="$3"
+  local data_dir="$4"
+  local image="${5:-}"
+  local host_port="${6:-}"
+  local container_port="${7:-}"
+  local token="${8:-}"
+  local url="${9:-}"
+  shift 9
+  local notes
+  notes=$(join_with_semicolon "$@")
+  local report_file="${data_dir}/runtime/last_report.json"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "执行报告(预览): action=${action}, status=${status}, container=${container_name}"
+    return
+  fi
+
+  run_cmd mkdir -p "${data_dir}/runtime"
+  cat > "${report_file}" <<EOF
+{
+  "generated_at_utc": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "action": "$(json_escape "${action}")",
+  "status": "$(json_escape "${status}")",
+  "container_name": "$(json_escape "${container_name}")",
+  "data_dir": "$(json_escape "${data_dir}")",
+  "image": "$(json_escape "${image}")",
+  "host_port": "$(json_escape "${host_port}")",
+  "container_port": "$(json_escape "${container_port}")",
+  "token": "$(json_escape "${token}")",
+  "url": "$(json_escape "${url}")",
+  "notes": "$(json_escape "${notes}")"
+}
+EOF
 }
 
 generate_token() {
@@ -55,7 +139,7 @@ read_with_default() {
   local prompt="$1"
   local default_value="$2"
   local value
-  printf '%s [%s]: ' "${prompt}" "${default_value}" >&2
+  printf '%s [%s] (回车使用默认值): ' "${prompt}" "${default_value}" >&2
   IFS= read -r value
   if [[ -z "${value}" ]]; then
     printf '%s\n' "${default_value}"
@@ -226,7 +310,15 @@ run_gateway_container() {
 
 install_easy_cli() {
   local data_dir="$1"
-  local target_dir="${data_dir}/Openclaw_Easy_Cli"
+  local target_dir
+  target_dir=$(easy_cli_target_dir "${data_dir}")
+
+  maybe_migrate_easy_cli_dir "${data_dir}"
+  run_cmd mkdir -p "$(dirname "${target_dir}")"
+
+  if [[ "${OPENCLAWCTL_TEST_FORCE_EASYCLI_FAIL:-0}" == "1" ]]; then
+    return 1
+  fi
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     run_cmd git clone "${EASY_CLI_REPO}" "${target_dir}"
@@ -242,7 +334,10 @@ install_easy_cli() {
 
 check_and_upgrade_easy_cli() {
   local data_dir="$1"
-  local target_dir="${data_dir}/Openclaw_Easy_Cli"
+  local target_dir
+  target_dir=$(easy_cli_target_dir "${data_dir}")
+
+  maybe_migrate_easy_cli_dir "${data_dir}"
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     run_cmd git -C "${target_dir}" fetch --all --prune
@@ -274,6 +369,37 @@ check_and_upgrade_easy_cli() {
     run_cmd git -C "${target_dir}" pull --ff-only
   else
     log_info "Easy CLI 已是最新"
+  fi
+}
+
+easy_cli_target_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/software/easy_cli"
+}
+
+easy_cli_legacy_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/Openclaw_Easy_Cli"
+}
+
+maybe_migrate_easy_cli_dir() {
+  local data_dir="$1"
+  local target_dir legacy_dir
+  target_dir=$(easy_cli_target_dir "${data_dir}")
+  legacy_dir=$(easy_cli_legacy_dir "${data_dir}")
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    if [[ -d "${legacy_dir}" && ! -e "${target_dir}" ]]; then
+      run_cmd mkdir -p "$(dirname "${target_dir}")"
+      run_cmd mv "${legacy_dir}" "${target_dir}"
+    fi
+    return
+  fi
+
+  if [[ -d "${legacy_dir}" && ! -e "${target_dir}" ]]; then
+    run_cmd mkdir -p "$(dirname "${target_dir}")"
+    run_cmd mv "${legacy_dir}" "${target_dir}"
+    log_info "已将 Easy CLI 目录迁移到: ${target_dir}"
   fi
 }
 
@@ -408,6 +534,10 @@ manage_container_runtime_deps() {
   local container_name="$1"
   local mode="$2" # install | check
   local deps_spec_raw="${3:-${DEFAULT_DEP_SET}}"
+  if [[ "${OPENCLAWCTL_TEST_FORCE_DEPS_FAIL:-0}" == "1" ]]; then
+    log_error "测试注入: 强制依赖补齐失败"
+    return 1
+  fi
   local deps_spec
   deps_spec=$(normalize_dep_list "${deps_spec_raw}")
   local mode_label
@@ -498,6 +628,27 @@ fix_go_path() {
     ensure_path_now /usr/local/bin
   fi
   sync_user_bin_dir /root/go/bin
+}
+
+is_mountpoint_path() {
+  local p="$1"
+  [ -n "$p" ] || return 1
+  [ -f /proc/mounts ] || return 1
+  grep -Eq "[[:space:]]${p}[[:space:]]" /proc/mounts
+}
+
+clear_dir_contents() {
+  local d="$1"
+  [ -d "$d" ] || return 0
+  if has find; then
+    find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+    return 0
+  fi
+  # fallback when find is unavailable
+  for f in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    [ -e "$f" ] || continue
+    rm -rf "$f" || true
+  done
 }
 
 echo "[deps] checking: ${DEPS}"
@@ -681,7 +832,12 @@ if [ "$need_go" -eq 1 ]; then
     fi
 
     if [ -f "$go_pkg" ]; then
-      rm -rf /usr/local/go
+      if [ -d /usr/local/go ] && is_mountpoint_path /usr/local/go; then
+        echo "[deps] /usr/local/go is a mountpoint, clearing contents only"
+        clear_dir_contents /usr/local/go
+      else
+        rm -rf /usr/local/go || true
+      fi
       tar -C /usr/local -xzf "$go_pkg" || true
       rm -f "$go_pkg" || true
       fix_go_path
@@ -864,6 +1020,95 @@ detect_persist_choice_from_container() {
   echo "${default_value}"
 }
 
+container_exists() {
+  local name="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "${name}"
+}
+
+detect_installed_deps_in_container() {
+  local name="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "${DEFAULT_DEP_SET}"
+    return
+  fi
+  if ! container_exists "${name}"; then
+    echo "${DEFAULT_DEP_SET}"
+    return
+  fi
+
+  local detected
+  detected=$(docker exec "${name}" sh -lc 'for c in npm uv go python3; do command -v "$c" >/dev/null 2>&1 && printf "%s " "$c"; done' 2>/dev/null || true)
+  normalize_dep_list "${detected}"
+}
+
+run_preflight_checks() {
+  local action="$1"
+  local container_name="$2"
+  local data_dir="$3"
+  local image="${4:-}"
+  local host_port="${5:-}"
+  local container_port="${6:-}"
+
+  log_info "[preflight] action=${action}"
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    log_info "[preflight] host_os=${ID:-unknown} ${VERSION_ID:-unknown}"
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "[preflight] docker 命令不可用"
+    return 1
+  fi
+
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    if ! docker info >/dev/null 2>&1; then
+      log_error "[preflight] 无法连接 Docker Daemon"
+      return 1
+    fi
+    local docker_server
+    docker_server=$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || true)
+    [[ -n "${docker_server}" ]] && log_info "[preflight] docker_server=${docker_server}"
+  else
+    log_info "[preflight] dry-run 模式，跳过 daemon 连通性校验"
+  fi
+
+  if [[ -n "${data_dir}" ]]; then
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      run_cmd mkdir -p "${data_dir}"
+      if [[ ! -w "${data_dir}" ]]; then
+        log_error "[preflight] 持久化目录不可写: ${data_dir}"
+        return 1
+      fi
+    fi
+    append_diagnostics_log "${data_dir}" "preflight action=${action} container=${container_name} host_port=${host_port} container_port=${container_port}"
+  fi
+
+  if [[ -n "${image}" ]]; then
+    local registry="${image%%/*}"
+    if [[ "${registry}" != *.* && "${registry}" != "localhost" ]]; then
+      registry="docker.io"
+    fi
+    log_info "[preflight] target_registry=${registry}"
+  fi
+
+  if [[ -n "${container_name}" && -n "${data_dir}" && "${DRY_RUN}" -eq 0 ]] && container_exists "${container_name}"; then
+    local existing_data
+    existing_data=$(detect_existing_data_dir "${container_name}" "")
+    if [[ -n "${existing_data}" && "${existing_data}" != "${data_dir}" ]]; then
+      log_info "[preflight] 注意: 当前容器数据目录为 ${existing_data}，与本次选择不同"
+    fi
+    if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
+      log_info "[preflight] 检测到可能是旧安装（无 persistence.profile），将启用兼容迁移识别"
+    fi
+  fi
+
+  return 0
+}
+
 prompt_dep_set() {
   local base_dep_set="$1"
   local normalized_base
@@ -941,6 +1186,213 @@ deps_summary_line() {
     return
   fi
   echo "npm=$(dep_choice_label "${dep_set}" "npm"), uv=$(dep_choice_label "${dep_set}" "uv"), go=$(dep_choice_label "${dep_set}" "go")"
+}
+
+detect_access_host() {
+  if [[ -n "${OPENCLAWCTL_ACCESS_HOST:-}" ]]; then
+    echo "${OPENCLAWCTL_ACCESS_HOST}"
+    return
+  fi
+  echo "Your Host IP"
+}
+
+get_container_status_text() {
+  local container_name="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "预演模式（未实际启动）"
+    return
+  fi
+  if ! container_exists "${container_name}"; then
+    echo "未运行（容器不存在）"
+    return
+  fi
+
+  local running
+  running=$(docker inspect -f '{{.State.Running}}' "${container_name}" 2>/dev/null || true)
+  if [[ "${running}" == "true" ]]; then
+    echo "正常（running）"
+  else
+    echo "异常（容器未运行）"
+  fi
+}
+
+detect_openclaw_version() {
+  local container_name="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "预演模式"
+    return
+  fi
+  if ! container_exists "${container_name}"; then
+    echo "未知"
+    return
+  fi
+
+  local version
+  version=$(docker exec "${container_name}" sh -lc 'openclaw --version 2>/dev/null | head -n1' 2>/dev/null | tr -d '\r' || true)
+  if [[ -z "${version}" ]]; then
+    echo "未知"
+  else
+    echo "${version}"
+  fi
+}
+
+detect_gateway_bind() {
+  local container_name="$1"
+  local data_dir="$2"
+  local default_bind="$3"
+
+  local bind=""
+  if [[ "${DRY_RUN}" -eq 0 ]] && container_exists "${container_name}"; then
+    bind=$(docker exec "${container_name}" sh -lc 'openclaw config get gateway.bind 2>/dev/null' 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]' || true)
+    if [[ "${bind}" == *"local"* ]]; then
+      echo "local"
+      return
+    fi
+    if [[ "${bind}" == *"lan"* ]]; then
+      echo "lan"
+      return
+    fi
+  fi
+
+  if [[ -f "${data_dir}/openclaw.json" ]]; then
+    bind=$(grep -Eo '"bind"[[:space:]]*:[[:space:]]*"[^"]+"' "${data_dir}/openclaw.json" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr '[:upper:]' '[:lower:]' || true)
+    if [[ "${bind}" == "local" || "${bind}" == "lan" ]]; then
+      echo "${bind}"
+      return
+    fi
+  fi
+
+  echo "${default_bind}"
+}
+
+gateway_bind_desc() {
+  local bind="$1"
+  if [[ "${bind}" == "local" ]]; then
+    echo "local（仅本机/内网代理访问）"
+  else
+    echo "lan（具备对外访问能力，取决于端口放行与防火墙）"
+  fi
+}
+
+runtime_persist_paths_desc() {
+  local data_dir="$1"
+  local bin_choice="$2"
+  local env_choice="$3"
+  local lines=()
+
+  if [[ "${bin_choice}" == "1" ]]; then
+    lines+=("${data_dir}/runtime/root-local-bin")
+    lines+=("${data_dir}/runtime/root-go-bin")
+  fi
+  if [[ "${env_choice}" == "1" ]]; then
+    lines+=("${data_dir}/runtime/usr-local-go")
+    lines+=("${data_dir}/runtime/root-local-share-uv")
+    lines+=("${data_dir}/runtime/root-local-pipx")
+    lines+=("${data_dir}/runtime/root-local-share-pipx")
+  fi
+  if [[ "${#lines[@]}" -eq 0 ]]; then
+    echo "未启用"
+    return
+  fi
+  local joined
+  joined=$(printf '%s; ' "${lines[@]}")
+  joined="${joined%; }"
+  echo "${joined}"
+}
+
+detect_installed_deps_summary() {
+  local container_name="$1"
+  local dep_set="$2"
+  local normalized
+  normalized=$(normalize_dep_list "${dep_set}")
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "预演模式（未实际检测）"
+    return
+  fi
+  if ! container_exists "${container_name}"; then
+    echo "未知（容器不存在）"
+    return
+  fi
+  if [[ -z "${normalized}" ]]; then
+    echo "未配置"
+    return
+  fi
+
+  local found
+  found=$(docker exec "${container_name}" sh -lc "for c in ${normalized}; do command -v \"\$c\" >/dev/null 2>&1 && printf '%s ' \"\$c\"; done" 2>/dev/null || true)
+  found=$(normalize_dep_list "${found}")
+  if [[ -z "${found}" ]]; then
+    echo "未检测到"
+  else
+    echo "${found}"
+  fi
+}
+
+detect_token_from_config() {
+  local data_dir="$1"
+  local cfg="${data_dir}/openclaw.json"
+  if [[ ! -f "${cfg}" ]]; then
+    echo ""
+    return
+  fi
+  grep -Eo '"token"[[:space:]]*:[[:space:]]*"[^"]+"' "${cfg}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true
+}
+
+print_human_summary() {
+  local action="$1"
+  local container_name="$2"
+  local version="$3"
+  local status_text="$4"
+  local data_dir="$5"
+  local runtime_paths="$6"
+  local deps_installed="$7"
+  local gateway_bind="$8"
+  local token="$9"
+  local host_port="${10}"
+
+  local access_host access_url
+  access_host=$(detect_access_host)
+  access_url="http://${access_host}:${host_port}/"
+  if [[ -n "${token}" ]]; then
+    access_url="${access_url}?token=${token}"
+  fi
+
+  printf '\n===============================\n'
+  if [[ "${action}" == "install" ]]; then
+    echo "安装结果"
+  else
+    echo "升级结果"
+  fi
+  echo "==============================="
+  if [[ "${action}" == "install" ]]; then
+    echo "已完成主程序安装"
+  else
+    echo "已完成主程序升级"
+  fi
+  echo "主程序版本：${version}"
+  echo "启动状态：${status_text}"
+  echo "持久化目录：${data_dir}"
+  echo "运行环境持久化目录：${runtime_paths}"
+  echo "已安装运行环境：${deps_installed}"
+  echo "网络绑定：$(gateway_bind_desc "${gateway_bind}")"
+  if [[ -n "${token}" ]]; then
+    echo "Token：${token}（请务必保留并妥善保存，是后续登录依据）"
+  else
+    echo "Token：沿用原配置（如需查看可在 ${data_dir}/openclaw.json 中确认）"
+  fi
+  echo "访问地址：${access_url}"
+  echo
+  echo "启动CLI配置流程："
+  echo "官方Cli命令："
+  echo "docker exec -it ${container_name} openclaw onboard"
+  echo
+  echo "EasyCli快捷配置三方模型："
+  echo "docker exec -it ${container_name} python3 /root/.openclaw/workspace/software/easy_cli/claw-commander.py"
+  echo
+  echo "后续可使用本脚本进行更新检查并升级程序"
+  echo "持久化信息在升级后会继续保留"
+  echo "==============================="
 }
 
 install_wizard() {
@@ -1102,6 +1554,11 @@ install_wizard() {
           continue
         fi
 
+        if ! run_preflight_checks "install" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+          log_error "preflight 未通过，请修复后重试"
+          continue
+        fi
+
         run_cmd mkdir -p "${data_dir}"
         run_cmd docker pull "${image}"
         remove_container_if_exists "${name}"
@@ -1109,17 +1566,41 @@ install_wizard() {
         run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
         save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
 
+        local -a install_nonfatal_issues=()
         if [[ "${easy_choice}" == "1" ]]; then
-          install_easy_cli "${data_dir}"
+          if ! run_optional_step "Easy CLI 安装/升级" install_easy_cli "${data_dir}"; then
+            install_nonfatal_issues+=("Easy CLI 安装/升级失败")
+          fi
         fi
 
         if [[ "${deps_install_choice}" == "1" ]]; then
-          manage_container_runtime_deps "${name}" "install" "${target_deps}"
-          save_dep_profile "${data_dir}" "${target_deps}"
+          if run_optional_step "依赖补齐" manage_container_runtime_deps "${name}" "install" "${target_deps}"; then
+            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${target_deps}" || true
+          else
+            install_nonfatal_issues+=("容器依赖补齐失败")
+          fi
         fi
 
         printf 'TOKEN=%s\n' "${token}"
         printf 'URL=http://<server-ip>:%s/?token=%s\n' "${host_port}" "${token}"
+        local install_version install_status_text install_runtime_paths install_deps_installed
+        install_version=$(detect_openclaw_version "${name}")
+        install_status_text=$(get_container_status_text "${name}")
+        install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}")
+        install_deps_installed=$(detect_installed_deps_summary "${name}" "${target_deps}")
+
+        local install_status="success"
+        if [[ "${#install_nonfatal_issues[@]}" -gt 0 ]]; then
+          install_status="success_with_warnings"
+          log_error "以下可选步骤失败（主应用已可用）:"
+          local issue
+          for issue in "${install_nonfatal_issues[@]}"; do
+            log_error " - ${issue}"
+          done
+          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+        fi
+        write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
+        print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}"
         return
         ;;
       q|Q)
@@ -1195,6 +1676,14 @@ upgrade_wizard() {
 
   local saved_dep_set
   saved_dep_set=$(load_dep_profile "${data_dir}")
+  if [[ ! -f "$(deps_profile_path "${data_dir}")" ]]; then
+    local detected_dep_set
+    detected_dep_set=$(detect_installed_deps_in_container "${name}")
+    if [[ -n "${detected_dep_set}" ]]; then
+      log_info "检测到旧安装依赖清单: ${detected_dep_set}"
+      saved_dep_set=$(normalize_dep_list "${saved_dep_set} ${detected_dep_set}")
+    fi
+  fi
   local deps_repair_choice="1"
   local upgrade_dep_set="${saved_dep_set}"
 
@@ -1289,6 +1778,11 @@ upgrade_wizard() {
           continue
         fi
 
+        if ! run_preflight_checks "upgrade" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+          log_error "preflight 未通过，请修复后重试"
+          continue
+        fi
+
         run_cmd mkdir -p "${data_dir}"
         run_cmd docker pull "${image}"
         remove_container_if_exists "${name}"
@@ -1299,14 +1793,41 @@ upgrade_wizard() {
         run_cmd docker logs --tail 30 "${name}"
         run_cmd docker exec "${name}" openclaw --version
 
+        local -a upgrade_nonfatal_issues=()
         if [[ "${easy_cli_upgrade}" == "1" ]]; then
-          check_and_upgrade_easy_cli "${data_dir}"
+          if ! run_optional_step "Easy CLI 检查升级" check_and_upgrade_easy_cli "${data_dir}"; then
+            upgrade_nonfatal_issues+=("Easy CLI 检查升级失败")
+          fi
         fi
 
         if [[ "${deps_repair_choice}" == "1" ]]; then
-          manage_container_runtime_deps "${name}" "install" "${upgrade_dep_set}"
-          save_dep_profile "${data_dir}" "${upgrade_dep_set}"
+          if run_optional_step "升级后依赖补齐" manage_container_runtime_deps "${name}" "install" "${upgrade_dep_set}"; then
+            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${upgrade_dep_set}" || true
+          else
+            upgrade_nonfatal_issues+=("升级后依赖补齐失败")
+          fi
         fi
+
+        if [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]]; then
+          log_error "以下可选步骤失败（升级主流程已完成）:"
+          local issue
+          for issue in "${upgrade_nonfatal_issues[@]}"; do
+            log_error " - ${issue}"
+          done
+          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+        fi
+        local upgrade_status="success"
+        [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]] && upgrade_status="success_with_warnings"
+        write_last_report "upgrade" "${upgrade_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${upgrade_nonfatal_issues[@]}"
+
+        local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
+        upgrade_version=$(detect_openclaw_version "${name}")
+        upgrade_status_text=$(get_container_status_text "${name}")
+        upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}")
+        upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
+        upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+        upgrade_token=$(detect_token_from_config "${data_dir}")
+        print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}"
         return
         ;;
       q|Q)
@@ -1336,6 +1857,7 @@ uninstall_wizard() {
   local mode
   mode=$(read_choice_default "请选择" "1")
 
+  echo "提示：直接回车使用默认持久化目录；如需修改请输入完整绝对路径。"
   local data_dir
   data_dir=$(read_with_default "持久化目录" "${detected_data_dir}")
 
@@ -1367,7 +1889,7 @@ easy_cli_only_upgrade_wizard() {
 
   printf '\n--- 任务预览 ---\n'
   echo "容器名: ${name}"
-  echo "Easy CLI 目录: ${data_dir}/Openclaw_Easy_Cli"
+  echo "Easy CLI 目录: $(easy_cli_target_dir "${data_dir}")"
   printf '确认仅升级 Easy CLI? (y/N): '
   local confirm
   IFS= read -r confirm
@@ -1376,7 +1898,18 @@ easy_cli_only_upgrade_wizard() {
     return
   fi
 
-  check_and_upgrade_easy_cli "${data_dir}"
+  if ! run_preflight_checks "easy-cli-upgrade" "${name}" "${data_dir}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return
+  fi
+
+  local -a easy_nonfatal_issues=()
+  if ! run_optional_step "Easy CLI 检查升级" check_and_upgrade_easy_cli "${data_dir}"; then
+    easy_nonfatal_issues+=("Easy CLI 检查升级失败")
+  fi
+  local easy_status="success"
+  [[ "${#easy_nonfatal_issues[@]}" -gt 0 ]] && easy_status="success_with_warnings"
+  write_last_report "easy-cli-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
 }
 
 deps_manage_wizard() {
@@ -1414,10 +1947,31 @@ deps_manage_wizard() {
     return
   fi
 
-  manage_container_runtime_deps "${name}" "${mode}" "${dep_set}"
-  if [[ "${mode}" == "install" ]]; then
-    save_dep_profile "${data_dir}" "${dep_set}"
+  if ! run_preflight_checks "deps-manage" "${name}" "${data_dir}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return
   fi
+
+  local -a deps_nonfatal_issues=()
+  if ! run_optional_step "依赖检测流程" manage_container_runtime_deps "${name}" "${mode}" "${dep_set}"; then
+    deps_nonfatal_issues+=("依赖检测流程失败")
+  fi
+  if [[ "${mode}" == "install" ]]; then
+    if ! run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${dep_set}"; then
+      deps_nonfatal_issues+=("依赖档案保存失败")
+    fi
+  fi
+
+  local deps_status="success"
+  if [[ "${#deps_nonfatal_issues[@]}" -gt 0 ]]; then
+    deps_status="success_with_warnings"
+    log_error "以下步骤存在告警:"
+    local issue
+    for issue in "${deps_nonfatal_issues[@]}"; do
+      log_error " - ${issue}"
+    done
+  fi
+  write_last_report "deps-manage" "${deps_status}" "${name}" "${data_dir}" "" "" "" "" "" "${deps_nonfatal_issues[@]}"
 }
 
 show_main_menu() {
