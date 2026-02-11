@@ -141,6 +141,7 @@ read_with_default() {
   local value
   printf '%s [%s] (回车使用默认值): ' "${prompt}" "${default_value}" >&2
   IFS= read -r value
+  value=$(sanitize_user_input "${value}")
   if [[ -z "${value}" ]]; then
     printf '%s\n' "${default_value}"
   else
@@ -154,6 +155,7 @@ read_required() {
   while true; do
     printf '%s: ' "${prompt}" >&2
     IFS= read -r value
+    value=$(sanitize_user_input "${value}")
     if [[ -n "${value}" ]]; then
       printf '%s\n' "${value}"
       return
@@ -186,11 +188,26 @@ read_choice_default() {
   local value
   printf '%s [%s]: ' "${prompt}" "${default_value}" >&2
   IFS= read -r value
+  value=$(sanitize_user_input "${value}")
   if [[ -z "${value}" ]]; then
     printf '%s\n' "${default_value}"
   else
     printf '%s\n' "${value}"
   fi
+}
+
+sanitize_user_input() {
+  local raw="${1:-}"
+  # Remove control chars (e.g. ESC sequences from arrow keys) to avoid menu corruption.
+  printf '%s' "${raw}" | awk '{gsub(/[[:cntrl:]]/, ""); printf "%s", $0}'
+}
+
+sanitize_port_mapping_input() {
+  local raw="${1:-}"
+  raw=$(sanitize_user_input "${raw}")
+  # Remove common ANSI cursor fragments that may remain after ESC stripping (e.g. [A, [D).
+  raw=$(printf '%s' "${raw}" | sed -E 's/\[[0-9;]*[A-Za-z]//g')
+  printf '%s\n' "${raw}"
 }
 
 choice_to_yes_no() {
@@ -1929,7 +1946,16 @@ install_wizard() {
         fi
         ;;
       11)
-        extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        local input_extra_ports
+        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
+        if [[ -z "${input_extra_ports}" ]]; then
+          extra_ports=""
+        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
+          extra_ports="${normalized_input_extra_ports}"
+        else
+          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
+        fi
         ;;
       c|C)
         if [[ -z "${image}" ]]; then
@@ -2175,7 +2201,16 @@ upgrade_wizard() {
         fi
         ;;
       8)
-        extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        local input_extra_ports
+        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
+        if [[ -z "${input_extra_ports}" ]]; then
+          extra_ports=""
+        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
+          extra_ports="${normalized_input_extra_ports}"
+        else
+          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
+        fi
         ;;
       c|C)
         if [[ -z "${image}" ]]; then
