@@ -9,6 +9,8 @@ EASY_CLI_REPO="https://github.com/moshall/Openclaw_Easy_Cli"
 DEFAULT_DEP_SET="npm uv"
 DEFAULT_ENABLE_BIN_PERSIST="1"
 DEFAULT_ENABLE_ENV_PERSIST="2"
+DEFAULT_ENABLE_APT_CONFIG_PERSIST="2"
+DEFAULT_ENABLE_CACHE_PERSIST="2"
 
 print_cmd() {
   local rendered=()
@@ -296,6 +298,8 @@ run_gateway_container() {
   local enable_bin_persist="${6:-${DEFAULT_ENABLE_BIN_PERSIST}}"
   local enable_env_persist="${7:-${DEFAULT_ENABLE_ENV_PERSIST}}"
   local extra_ports="${8:-}"
+  local enable_apt_cfg_persist="${9:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local enable_cache_persist="${10:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
   local volume_args=()
   local port_args=("-p" "${host_port}:${container_port}")
 
@@ -311,13 +315,43 @@ run_gateway_container() {
       "${data_dir}/runtime/root-local-lib" \
       "${data_dir}/runtime/root-local-share-uv" \
       "${data_dir}/runtime/root-local-pipx" \
-      "${data_dir}/runtime/root-local-share-pipx"
+      "${data_dir}/runtime/root-local-share-pipx" \
+      "${data_dir}/runtime/root-config" \
+      "${data_dir}/runtime/root-ssh" \
+      "${data_dir}/runtime/root-docker" \
+      "${data_dir}/runtime/root-aws" \
+      "${data_dir}/runtime/root-kube"
+    run_cmd touch "${data_dir}/runtime/root-gitconfig" \
+      "${data_dir}/runtime/root-netrc" \
+      "${data_dir}/runtime/root-npmrc" \
+      "${data_dir}/runtime/root-pypirc"
     volume_args+=("-v" "${data_dir}/runtime/usr-local-go:/usr/local/go")
     volume_args+=("-v" "${data_dir}/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules")
     volume_args+=("-v" "${data_dir}/runtime/root-local-lib:/root/.local/lib")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv")
     volume_args+=("-v" "${data_dir}/runtime/root-local-pipx:/root/.local/pipx")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx")
+    volume_args+=("-v" "${data_dir}/runtime/root-config:/root/.config")
+    volume_args+=("-v" "${data_dir}/runtime/root-ssh:/root/.ssh")
+    volume_args+=("-v" "${data_dir}/runtime/root-gitconfig:/root/.gitconfig")
+    volume_args+=("-v" "${data_dir}/runtime/root-docker:/root/.docker")
+    volume_args+=("-v" "${data_dir}/runtime/root-aws:/root/.aws")
+    volume_args+=("-v" "${data_dir}/runtime/root-kube:/root/.kube")
+    volume_args+=("-v" "${data_dir}/runtime/root-netrc:/root/.netrc")
+    volume_args+=("-v" "${data_dir}/runtime/root-npmrc:/root/.npmrc")
+    volume_args+=("-v" "${data_dir}/runtime/root-pypirc:/root/.pypirc")
+  fi
+
+  if [[ "${enable_apt_cfg_persist}" == "1" ]]; then
+    run_cmd mkdir -p "${data_dir}/runtime/etc-apt-sources-list-d" "${data_dir}/runtime/etc-apt-keyrings"
+    volume_args+=("-v" "${data_dir}/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d")
+    volume_args+=("-v" "${data_dir}/runtime/etc-apt-keyrings:/etc/apt/keyrings")
+  fi
+
+  if [[ "${enable_cache_persist}" == "1" ]]; then
+    run_cmd mkdir -p "${data_dir}/runtime/root-npm-cache" "${data_dir}/runtime/root-go-pkg-mod"
+    volume_args+=("-v" "${data_dir}/runtime/root-npm-cache:/root/.npm")
+    volume_args+=("-v" "${data_dir}/runtime/root-go-pkg-mod:/root/go/pkg/mod")
   fi
 
   if [[ -n "${extra_ports}" ]]; then
@@ -439,6 +473,52 @@ copy_dir_from_container_to_host() {
   return 0
 }
 
+copy_file_from_container_to_host() {
+  local container_name="$1"
+  local src_file="$2"
+  local dest_file="$3"
+  local label="$4"
+  local rc
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd mkdir -p "$(dirname "${dest_file}")"
+    run_cmd docker cp "${container_name}:${src_file}" "${dest_file}"
+    return 0
+  fi
+
+  if ! container_exists "${container_name}"; then
+    log_info "[迁移] 容器 ${container_name} 不存在，跳过 ${label}"
+    return 0
+  fi
+
+  if ! docker exec "${container_name}" sh -lc "test -f '${src_file}'" >/dev/null 2>&1; then
+    log_info "[迁移] 未检测到 ${src_file}，跳过 ${label}"
+    return 0
+  fi
+
+  run_cmd mkdir -p "$(dirname "${dest_file}")"
+  set +e
+  print_cmd docker cp "${container_name}:${src_file}" "${dest_file}"
+  docker cp "${container_name}:${src_file}" "${dest_file}"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    return 0
+  fi
+
+  log_info "[迁移] ${label} 文件复制遇到兼容性问题，尝试 cat 流兼容迁移"
+  set +e
+  docker exec "${container_name}" sh -lc "cat '${src_file}'" > "${dest_file}"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log_error "[迁移] 文件兼容迁移失败: ${label}"
+    return "${rc}"
+  fi
+  log_info "[迁移] 文件兼容迁移完成: ${label}"
+  return 0
+}
+
 normalize_path_for_compare() {
   local path="$1"
   while [[ "${path}" != "/" && "${path}" == */ ]]; do
@@ -513,8 +593,10 @@ pre_upgrade_migrate_runtime_data() {
   local data_dir="$2"
   local enable_bin_persist="$3"
   local enable_env_persist="$4"
+  local enable_apt_cfg_persist="${5:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local enable_cache_persist="${6:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
 
-  if [[ "${enable_bin_persist}" != "1" && "${enable_env_persist}" != "1" ]]; then
+  if [[ "${enable_bin_persist}" != "1" && "${enable_env_persist}" != "1" && "${enable_apt_cfg_persist}" != "1" && "${enable_cache_persist}" != "1" ]]; then
     log_info "[迁移] 本次未启用 runtime 持久化，跳过升级前迁移"
     return 0
   fi
@@ -534,6 +616,19 @@ pre_upgrade_migrate_runtime_data() {
   local target_root_local_share_uv="${data_dir}/runtime/root-local-share-uv"
   local target_root_local_pipx="${data_dir}/runtime/root-local-pipx"
   local target_root_local_share_pipx="${data_dir}/runtime/root-local-share-pipx"
+  local target_root_config="${data_dir}/runtime/root-config"
+  local target_root_ssh="${data_dir}/runtime/root-ssh"
+  local target_root_gitconfig="${data_dir}/runtime/root-gitconfig"
+  local target_root_docker="${data_dir}/runtime/root-docker"
+  local target_root_aws="${data_dir}/runtime/root-aws"
+  local target_root_kube="${data_dir}/runtime/root-kube"
+  local target_root_netrc="${data_dir}/runtime/root-netrc"
+  local target_root_npmrc="${data_dir}/runtime/root-npmrc"
+  local target_root_pypirc="${data_dir}/runtime/root-pypirc"
+  local target_etc_apt_sources_list_d="${data_dir}/runtime/etc-apt-sources-list-d"
+  local target_etc_apt_keyrings="${data_dir}/runtime/etc-apt-keyrings"
+  local target_root_npm_cache="${data_dir}/runtime/root-npm-cache"
+  local target_root_go_pkg_mod="${data_dir}/runtime/root-go-pkg-mod"
 
   validate_runtime_target_path "${data_dir}" "${target_root_local_bin}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_go_bin}" || return 1
@@ -543,6 +638,19 @@ pre_upgrade_migrate_runtime_data() {
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_uv}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_pipx}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_pipx}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_config}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_ssh}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_gitconfig}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_docker}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_aws}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_kube}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_netrc}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_npmrc}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_pypirc}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_etc_apt_sources_list_d}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_etc_apt_keyrings}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_npm_cache}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_go_pkg_mod}" || return 1
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/bin" "${target_root_local_bin}" "bin:/root/.local/bin"; then
@@ -571,6 +679,51 @@ pre_upgrade_migrate_runtime_data() {
     fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.config" "${target_root_config}" "env:/root/.config"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.config" "${target_root_config}" "env:/root/.config" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.ssh" "${target_root_ssh}" "env:/root/.ssh"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.ssh" "${target_root_ssh}" "env:/root/.ssh" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.gitconfig" "${target_root_gitconfig}" "env:/root/.gitconfig"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.gitconfig" "${target_root_gitconfig}" "env:/root/.gitconfig" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.docker" "${target_root_docker}" "env:/root/.docker"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.docker" "${target_root_docker}" "env:/root/.docker" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.aws" "${target_root_aws}" "env:/root/.aws"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.aws" "${target_root_aws}" "env:/root/.aws" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.kube" "${target_root_kube}" "env:/root/.kube"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.kube" "${target_root_kube}" "env:/root/.kube" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.netrc" "${target_root_netrc}" "env:/root/.netrc"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.netrc" "${target_root_netrc}" "env:/root/.netrc" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.npmrc" "${target_root_npmrc}" "env:/root/.npmrc"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.npmrc" "${target_root_npmrc}" "env:/root/.npmrc" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc" || return 1
+    fi
+  fi
+
+  if [[ "${enable_apt_cfg_persist}" == "1" ]]; then
+    if ! should_skip_migration_for_path "${container_name}" "/etc/apt/sources.list.d" "${target_etc_apt_sources_list_d}" "aptcfg:/etc/apt/sources.list.d"; then
+      copy_dir_from_container_to_host "${container_name}" "/etc/apt/sources.list.d" "${target_etc_apt_sources_list_d}" "aptcfg:/etc/apt/sources.list.d" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/etc/apt/keyrings" "${target_etc_apt_keyrings}" "aptcfg:/etc/apt/keyrings"; then
+      copy_dir_from_container_to_host "${container_name}" "/etc/apt/keyrings" "${target_etc_apt_keyrings}" "aptcfg:/etc/apt/keyrings" || return 1
+    fi
+  fi
+
+  if [[ "${enable_cache_persist}" == "1" ]]; then
+    if ! should_skip_migration_for_path "${container_name}" "/root/.npm" "${target_root_npm_cache}" "cache:/root/.npm"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.npm" "${target_root_npm_cache}" "cache:/root/.npm" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/go/pkg/mod" "${target_root_go_pkg_mod}" "cache:/root/go/pkg/mod"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/go/pkg/mod" "${target_root_go_pkg_mod}" "cache:/root/go/pkg/mod" || return 1
     fi
   fi
 
@@ -754,6 +907,70 @@ persistence_profile_path() {
   echo "${data_dir}/runtime/persistence.profile"
 }
 
+apt_manual_profile_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/apt-manual.list"
+}
+
+apt_sources_persist_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/etc-apt-sources-list-d"
+}
+
+apt_keyrings_persist_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/etc-apt-keyrings"
+}
+
+dir_has_content() {
+  local d="$1"
+  [[ -d "${d}" ]] || return 1
+  find "${d}" -mindepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_apt_config_seeded_from_image() {
+  local image="$1"
+  local data_dir="$2"
+  local sources_dir keyrings_dir
+  sources_dir=$(apt_sources_persist_dir "${data_dir}")
+  keyrings_dir=$(apt_keyrings_persist_dir "${data_dir}")
+
+  run_cmd mkdir -p "${sources_dir}" "${keyrings_dir}"
+
+  if dir_has_content "${sources_dir}" || dir_has_content "${keyrings_dir}"; then
+    return 0
+  fi
+
+  log_info "[apt] 检测到 APT 源持久化目录为空，开始从目标镜像初始化默认 sources/keyrings"
+  local tmp_container
+  tmp_container="openclawctl-aptseed-$$"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd docker create --name "${tmp_container}" --entrypoint sh "${image}" -lc 'sleep 1'
+    run_cmd docker cp "${tmp_container}:/etc/apt/sources.list.d/." "${sources_dir}/"
+    run_cmd docker cp "${tmp_container}:/etc/apt/keyrings/." "${keyrings_dir}/"
+    run_cmd docker rm -f "${tmp_container}"
+    return 0
+  fi
+
+  run_cmd docker create --name "${tmp_container}" --entrypoint sh "${image}" -lc 'sleep 1'
+  set +e
+  docker cp "${tmp_container}:/etc/apt/sources.list.d/." "${sources_dir}/" >/dev/null 2>&1
+  local rc_sources=$?
+  docker cp "${tmp_container}:/etc/apt/keyrings/." "${keyrings_dir}/" >/dev/null 2>&1
+  local rc_keys=$?
+  docker rm -f "${tmp_container}" >/dev/null 2>&1 || true
+  set -e
+  if [[ "${rc_sources}" -ne 0 ]]; then
+    log_error "[apt] 初始化 sources.list.d 失败"
+    return 1
+  fi
+  if [[ "${rc_keys}" -ne 0 ]]; then
+    log_info "[apt] 目标镜像未提供 /etc/apt/keyrings 或复制失败，已继续"
+  fi
+  log_info "[apt] 已完成 APT 源目录初始化"
+}
+
 load_dep_profile() {
   local data_dir="$1"
   local profile
@@ -805,18 +1022,194 @@ save_persistence_profile() {
   local data_dir="$1"
   local bin_choice="$2"
   local env_choice="$3"
+  local apt_cfg_choice="${4:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local cache_choice="${5:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
   local profile
   profile=$(persistence_profile_path "${data_dir}")
   run_cmd mkdir -p "${data_dir}/runtime"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     log_info "持久化档案将保存到: ${profile}"
-    log_info "持久化档案内容: bin=${bin_choice}, env=${env_choice}"
+    log_info "持久化档案内容: bin=${bin_choice}, env=${env_choice}, aptcfg=${apt_cfg_choice}, cache=${cache_choice}"
     return
   fi
   cat > "${profile}" <<EOF
 BIN_PERSIST=${bin_choice}
 ENV_PERSIST=${env_choice}
+APT_CFG_PERSIST=${apt_cfg_choice}
+CACHE_PERSIST=${cache_choice}
 EOF
+}
+
+snapshot_apt_manual_packages() {
+  local container_name="$1"
+  local data_dir="$2"
+  local profile
+  profile=$(apt_manual_profile_path "${data_dir}")
+  local snapshot_script='if command -v apt-mark >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1; then apt-mark showmanual | sort -u; fi'
+
+  run_cmd mkdir -p "${data_dir}/runtime"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd_brief "docker exec ${container_name} sh -lc <apt-manual-snapshot-script>" \
+      docker exec "${container_name}" sh -lc "${snapshot_script}"
+    return 0
+  fi
+
+  if ! container_exists "${container_name}"; then
+    log_info "[apt] 容器不存在，跳过 APT 手工包清单快照"
+    return 0
+  fi
+
+  local packages
+  packages=$(docker exec "${container_name}" sh -lc "${snapshot_script}" 2>/dev/null || true)
+  if [[ -z "${packages}" ]]; then
+    : > "${profile}"
+    log_info "[apt] 未检测到 apt 手工包清单或容器非 apt 系，已写入空档案"
+    return 0
+  fi
+  printf '%s\n' "${packages}" | sed '/^[[:space:]]*$/d' > "${profile}"
+  log_info "[apt] 已保存 APT 手工包清单: ${profile}"
+}
+
+restore_apt_manual_packages() {
+  local container_name="$1"
+  local data_dir="$2"
+  local profile
+  profile=$(apt_manual_profile_path "${data_dir}")
+  local restore_script='
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "[apt] skip restore: apt-get not found"
+  exit 0
+fi
+if [ ! -s /root/.openclaw/runtime/apt-manual.list ]; then
+  echo "[apt] skip restore: apt-manual.list empty"
+  exit 0
+fi
+export DEBIAN_FRONTEND=noninteractive
+report=/root/.openclaw/runtime/apt-restore.report
+{
+  echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "phase=precheck"
+} > "$report"
+if ! apt-get update; then
+  echo "phase=failed"
+  echo "reason=apt-update-failed"
+  echo "[apt] source check failed, please verify sources/keyrings/network"
+  exit 21
+fi
+total=$(sed "/^[[:space:]]*$/d" /root/.openclaw/runtime/apt-manual.list | wc -l | tr -d " ")
+missing=""
+while IFS= read -r pkg; do
+  [ -n "$pkg" ] || continue
+  dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+done < /root/.openclaw/runtime/apt-manual.list
+missing=$(echo "$missing" | xargs -n1 2>/dev/null | sort -u | xargs 2>/dev/null || true)
+missing_count=0
+[ -n "$missing" ] && missing_count=$(echo "$missing" | xargs -n1 2>/dev/null | wc -l | tr -d " ")
+{
+  echo "phase=resolved"
+  echo "total=$total"
+  echo "missing=$missing_count"
+} >> "$report"
+if [ "$missing_count" -eq 0 ]; then
+  echo "[apt] all manual packages already satisfied"
+  echo "status=ok" >> "$report"
+  exit 0
+fi
+if apt-get install -y --no-install-recommends $missing; then
+  echo "status=ok" >> "$report"
+  echo "[apt] restore done: installed_missing=$missing_count total=$total"
+else
+  echo "status=failed" >> "$report"
+  echo "[apt] restore failed while installing missing packages"
+  exit 22
+fi'
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd_brief "docker exec ${container_name} sh -lc <apt-manual-restore-script>" \
+      docker exec "${container_name}" sh -lc "${restore_script}"
+    return 0
+  fi
+
+  if [[ ! -s "${profile}" ]]; then
+    log_info "[apt] APT 手工包档案为空，跳过回放安装"
+    return 0
+  fi
+
+  if ! container_exists "${container_name}"; then
+    log_info "[apt] 容器不存在，跳过 APT 手工包回放安装"
+    return 0
+  fi
+
+  run_cmd_brief "docker exec ${container_name} sh -lc <apt-manual-restore-script>" \
+    docker exec "${container_name}" sh -lc "${restore_script}"
+}
+
+repair_runtime_command_paths() {
+  local container_name="$1"
+  local script='
+set -e
+ensure_path_now() {
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    case ":$PATH:" in
+      *":$d:"*) ;;
+      *) PATH="$d:$PATH" ;;
+    esac
+  done
+}
+persist_path_dir() {
+  local d="$1"
+  [ -d "$d" ] || return 0
+  local profile="/etc/profile.d/openclaw-runtime-path.sh"
+  mkdir -p /etc/profile.d || true
+  touch "$profile" || return 0
+  grep -F "export PATH=\"$d:\$PATH\"" "$profile" >/dev/null 2>&1 || \
+    echo "export PATH=\"$d:\$PATH\"" >> "$profile"
+}
+sync_user_bin_dir() {
+  local src="$1"
+  [ -d "$src" ] || return 0
+  [ -d /usr/local/bin ] || return 0
+  for f in "$src"/*; do
+    [ -f "$f" ] || continue
+    [ -x "$f" ] || continue
+    ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+  done
+}
+ensure_path_now /root/.local/bin /usr/local/go/bin /root/go/bin /usr/local/bin
+persist_path_dir /root/.local/bin
+persist_path_dir /usr/local/go/bin
+persist_path_dir /root/go/bin
+[ -x /usr/local/go/bin/go ] && ln -sf /usr/local/go/bin/go /usr/local/bin/go || true
+[ -x /root/.local/bin/uv ] && ln -sf /root/.local/bin/uv /usr/local/bin/uv || true
+sync_user_bin_dir /root/.local/bin
+sync_user_bin_dir /root/go/bin
+true'
+
+  run_cmd_brief "docker exec ${container_name} sh -lc <runtime-path-repair-script>" \
+    docker exec "${container_name}" sh -lc "${script}"
+}
+
+repair_persisted_auth_permissions() {
+  local container_name="$1"
+  local script='
+[ -d /root/.ssh ] && chmod 700 /root/.ssh || true
+[ -d /root/.ssh ] && find /root/.ssh -type f -exec chmod 600 {} + 2>/dev/null || true
+[ -f /root/.gitconfig ] && chmod 600 /root/.gitconfig || true
+[ -f /root/.netrc ] && chmod 600 /root/.netrc || true
+[ -f /root/.npmrc ] && chmod 600 /root/.npmrc || true
+[ -f /root/.pypirc ] && chmod 600 /root/.pypirc || true
+[ -d /root/.aws ] && chmod 700 /root/.aws || true
+[ -d /root/.aws ] && find /root/.aws -type f -exec chmod 600 {} + 2>/dev/null || true
+[ -d /root/.kube ] && chmod 700 /root/.kube || true
+[ -d /root/.kube ] && find /root/.kube -type f -exec chmod 600 {} + 2>/dev/null || true
+[ -d /root/.docker ] && chmod 700 /root/.docker || true
+[ -d /root/.docker ] && find /root/.docker -type f -exec chmod 600 {} + 2>/dev/null || true
+true'
+
+  run_cmd_brief "docker exec ${container_name} sh -lc <auth-perms-fix-script>" \
+    docker exec "${container_name}" sh -lc "${script}"
 }
 
 dep_enabled() {
@@ -892,6 +1285,18 @@ has_effective() {
       return 1
       ;;
   esac
+}
+dep_status() {
+  local cmd="$1"
+  if has "$cmd"; then
+    echo "FOUND"
+    return
+  fi
+  if has_effective "$cmd"; then
+    echo "FOUND_BUT_NOT_IN_PATH"
+    return
+  fi
+  echo "MISSING"
 }
 normalize_deps() {
   echo "$1" | tr ',' ' ' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
@@ -994,11 +1399,7 @@ clear_dir_contents() {
 
 echo "[deps] checking: ${DEPS}"
 for cmd in $DEPS; do
-  if has_effective "$cmd"; then
-    echo "FOUND:$cmd"
-  else
-    echo "MISSING:$cmd"
-  fi
+  echo "$(dep_status "$cmd"):$cmd"
 done
 
 if [ "$MODE" = "check" ]; then
@@ -1236,11 +1637,7 @@ sync_user_bin_dir /root/go/bin
 
 echo "[deps] final status:"
 for cmd in $DEPS; do
-  if has_effective "$cmd"; then
-    echo "FOUND:$cmd"
-  else
-    echo "MISSING:$cmd"
-  fi
+  echo "$(dep_status "$cmd"):$cmd"
 done
 echo "PATH:$PATH"
 EOS
@@ -1278,6 +1675,60 @@ detect_existing_data_dir() {
     fi
     printf '%s\n' "${fallback}"
   fi
+}
+
+detect_existing_image() {
+  local name="$1"
+  local fallback="$2"
+
+  if [[ -n "${OPENCLAWCTL_TEST_CURRENT_IMAGE:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TEST_CURRENT_IMAGE}"
+    return
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    printf '%s\n' "${fallback}"
+    return
+  fi
+
+  local detected
+  detected=$(docker inspect -f '{{.Config.Image}}' "${name}" 2>/dev/null || true)
+  if [[ -n "${detected}" ]]; then
+    printf '%s\n' "${detected}"
+  else
+    printf '%s\n' "${fallback}"
+  fi
+}
+
+container_path_exists() {
+  local name="$1"
+  local path="$2"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+  if ! container_exists "${name}"; then
+    return 1
+  fi
+  docker exec "${name}" sh -lc "test -e '${path}'" >/dev/null 2>&1
+}
+
+container_path_has_data() {
+  local name="$1"
+  local path="$2"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+  if ! container_exists "${name}"; then
+    return 1
+  fi
+  docker exec "${name}" sh -lc "
+if [ -d '${path}' ]; then
+  find '${path}' -mindepth 1 -print -quit 2>/dev/null | grep -q .
+elif [ -f '${path}' ]; then
+  [ -s '${path}' ]
+else
+  false
+fi" >/dev/null 2>&1
 }
 
 detect_existing_ports() {
@@ -1408,7 +1859,7 @@ has_mount_destination() {
 
 detect_persist_choice_from_container() {
   local name="$1"
-  local target="$2" # bin | env
+  local target="$2" # bin | env | aptcfg | cache
   local default_value="$3"
 
   if [[ "${target}" == "bin" ]]; then
@@ -1424,7 +1875,30 @@ detect_persist_choice_from_container() {
       has_mount_destination "${name}" "/root/.local/lib" || \
       has_mount_destination "${name}" "/root/.local/share/uv" || \
       has_mount_destination "${name}" "/root/.local/pipx" || \
-      has_mount_destination "${name}" "/root/.local/share/pipx"; then
+      has_mount_destination "${name}" "/root/.local/share/pipx" || \
+      has_mount_destination "${name}" "/root/.config" || \
+      has_mount_destination "${name}" "/root/.ssh" || \
+      has_mount_destination "${name}" "/root/.gitconfig" || \
+      has_mount_destination "${name}" "/root/.docker" || \
+      has_mount_destination "${name}" "/root/.aws" || \
+      has_mount_destination "${name}" "/root/.kube" || \
+      has_mount_destination "${name}" "/root/.netrc" || \
+      has_mount_destination "${name}" "/root/.npmrc" || \
+      has_mount_destination "${name}" "/root/.pypirc"; then
+      echo "1"
+      return
+    fi
+  fi
+
+  if [[ "${target}" == "aptcfg" ]]; then
+    if has_mount_destination "${name}" "/etc/apt/sources.list.d" || has_mount_destination "${name}" "/etc/apt/keyrings"; then
+      echo "1"
+      return
+    fi
+  fi
+
+  if [[ "${target}" == "cache" ]]; then
+    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod"; then
       echo "1"
       return
     fi
@@ -1488,6 +1962,9 @@ print_upgrade_discovery_summary() {
   local env_mounted="否"
   local node_mod_mounted="否"
   local py_user_lib_mounted="否"
+  local auth_cfg_mounted="否"
+  local apt_cfg_mounted="否"
+  local cache_mounted="否"
 
   if container_exists "${name}"; then
     exists_text="是"
@@ -1503,12 +1980,38 @@ print_upgrade_discovery_summary() {
       has_mount_destination "${name}" "/root/.local/pipx" || \
       has_mount_destination "${name}" "/root/.local/share/pipx" || \
       has_mount_destination "${name}" "/usr/local/lib/node_modules" || \
-      has_mount_destination "${name}" "/root/.local/lib"; then
+      has_mount_destination "${name}" "/root/.local/lib" || \
+      has_mount_destination "${name}" "/root/.config" || \
+      has_mount_destination "${name}" "/root/.ssh" || \
+      has_mount_destination "${name}" "/root/.gitconfig" || \
+      has_mount_destination "${name}" "/root/.docker" || \
+      has_mount_destination "${name}" "/root/.aws" || \
+      has_mount_destination "${name}" "/root/.kube" || \
+      has_mount_destination "${name}" "/root/.netrc" || \
+      has_mount_destination "${name}" "/root/.npmrc" || \
+      has_mount_destination "${name}" "/root/.pypirc"; then
       env_mounted="是"
     fi
 
     has_mount_destination "${name}" "/usr/local/lib/node_modules" && node_mod_mounted="是"
     has_mount_destination "${name}" "/root/.local/lib" && py_user_lib_mounted="是"
+    if has_mount_destination "${name}" "/root/.config" || \
+      has_mount_destination "${name}" "/root/.ssh" || \
+      has_mount_destination "${name}" "/root/.gitconfig" || \
+      has_mount_destination "${name}" "/root/.docker" || \
+      has_mount_destination "${name}" "/root/.aws" || \
+      has_mount_destination "${name}" "/root/.kube" || \
+      has_mount_destination "${name}" "/root/.netrc" || \
+      has_mount_destination "${name}" "/root/.npmrc" || \
+      has_mount_destination "${name}" "/root/.pypirc"; then
+      auth_cfg_mounted="是"
+    fi
+    if has_mount_destination "${name}" "/etc/apt/sources.list.d" || has_mount_destination "${name}" "/etc/apt/keyrings"; then
+      apt_cfg_mounted="是"
+    fi
+    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod"; then
+      cache_mounted="是"
+    fi
   fi
 
   [[ -d "${data_dir}/runtime" ]] && runtime_dir_text="是"
@@ -1518,7 +2021,7 @@ print_upgrade_discovery_summary() {
   echo "runtime 目录存在: ${runtime_dir_text} (${data_dir}/runtime)"
   echo "已检测依赖: ${deps_text}"
   echo "当前持久化挂载: bin=${bin_mounted}, env=${env_mounted}"
-  echo "扩展环境挂载: npm全局(node_modules)=${node_mod_mounted}, pip用户库(/root/.local/lib)=${py_user_lib_mounted}"
+  echo "扩展环境挂载: npm全局(node_modules)=${node_mod_mounted}, pip用户库(/root/.local/lib)=${py_user_lib_mounted}, 授权配置(.config/.ssh/.gitconfig/.docker/.aws/.kube/.netrc/.npmrc/.pypirc)=${auth_cfg_mounted}, APT源Key(${apt_cfg_mounted}), 缓存(.npm/go mod)=${cache_mounted}"
 
   local -a hints=()
   if [[ "${exists_text}" == "是" ]]; then
@@ -1534,6 +2037,15 @@ print_upgrade_discovery_summary() {
     if dep_enabled "${deps_text}" "python3" && [[ "${py_user_lib_mounted}" != "是" ]]; then
       hints+=("检测到 python3 可用，若依赖 pip --user 包建议开启 env（持久化 /root/.local/lib）。")
     fi
+    if [[ "${auth_cfg_mounted}" != "是" ]]; then
+      hints+=("若依赖 gh/ssh/docker/aws/kube 等登录态，建议开启 env（持久化常见授权配置目录）。")
+    fi
+    if [[ "${apt_cfg_mounted}" != "是" ]]; then
+      hints+=("若依赖第三方 apt 源或 key，建议开启 APT源Key 持久化（/etc/apt/sources.list.d 与 /etc/apt/keyrings）。")
+    fi
+    if [[ "${cache_mounted}" != "是" ]]; then
+      hints+=("若希望减少 npm/go 二次下载时间，可开启缓存持久化（/root/.npm 与 /root/go/pkg/mod）。")
+    fi
   fi
 
   if [[ "${#hints[@]}" -gt 0 ]]; then
@@ -1542,7 +2054,7 @@ print_upgrade_discovery_summary() {
     for item in "${hints[@]}"; do
       echo " - ${item}"
     done
-    echo "说明: 若本次开启了 bin/env，脚本会在删除旧容器前自动尝试迁移对应 runtime 数据。"
+    echo "说明: 若本次开启了 bin/env/aptcfg/cache，脚本会在删除旧容器前自动尝试迁移对应 runtime 数据。"
   else
     echo "建议: 当前状态无明显风险，可继续升级。"
   fi
@@ -1782,6 +2294,8 @@ runtime_persist_paths_desc() {
   local data_dir="$1"
   local bin_choice="$2"
   local env_choice="$3"
+  local apt_cfg_choice="${4:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local cache_choice="${5:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
   local lines=()
 
   if [[ "${bin_choice}" == "1" ]]; then
@@ -1795,6 +2309,23 @@ runtime_persist_paths_desc() {
     lines+=("${data_dir}/runtime/root-local-share-uv")
     lines+=("${data_dir}/runtime/root-local-pipx")
     lines+=("${data_dir}/runtime/root-local-share-pipx")
+    lines+=("${data_dir}/runtime/root-config")
+    lines+=("${data_dir}/runtime/root-ssh")
+    lines+=("${data_dir}/runtime/root-gitconfig")
+    lines+=("${data_dir}/runtime/root-docker")
+    lines+=("${data_dir}/runtime/root-aws")
+    lines+=("${data_dir}/runtime/root-kube")
+    lines+=("${data_dir}/runtime/root-netrc")
+    lines+=("${data_dir}/runtime/root-npmrc")
+    lines+=("${data_dir}/runtime/root-pypirc")
+  fi
+  if [[ "${apt_cfg_choice}" == "1" ]]; then
+    lines+=("${data_dir}/runtime/etc-apt-sources-list-d")
+    lines+=("${data_dir}/runtime/etc-apt-keyrings")
+  fi
+  if [[ "${cache_choice}" == "1" ]]; then
+    lines+=("${data_dir}/runtime/root-npm-cache")
+    lines+=("${data_dir}/runtime/root-go-pkg-mod")
   fi
   if [[ "${#lines[@]}" -eq 0 ]]; then
     echo "未启用"
@@ -1825,9 +2356,46 @@ detect_installed_deps_summary() {
     return
   fi
 
+  local summary_script
+  summary_script=$(cat <<'EOS'
+status() {
+  c="$1"
+  if command -v "$c" >/dev/null 2>&1; then
+    printf "%s " "$c"
+    return
+  fi
+  case "$c" in
+    go)
+      if [ -x /usr/local/go/bin/go ] || [ -x /root/go/bin/go ] || [ -x /usr/local/bin/go ]; then
+        printf "%s(PATH需修复) " "$c"
+      fi
+      ;;
+    uv)
+      if [ -x /root/.local/bin/uv ] || [ -x /usr/local/bin/uv ] || [ -x /usr/bin/uv ]; then
+        printf "%s(PATH需修复) " "$c"
+      fi
+      ;;
+    npm)
+      if [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ]; then
+        printf "%s(PATH需修复) " "$c"
+      fi
+      ;;
+    python3)
+      if [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ]; then
+        printf "%s(PATH需修复) " "$c"
+      fi
+      ;;
+  esac
+}
+for c in __DEPS__; do
+  status "$c"
+done
+EOS
+)
+  summary_script="${summary_script/__DEPS__/${normalized}}"
   local found
-  found=$(docker exec "${container_name}" sh -lc "for c in ${normalized}; do command -v \"\$c\" >/dev/null 2>&1 && printf '%s ' \"\$c\"; done" 2>/dev/null || true)
-  found=$(normalize_dep_list "${found}")
+  found=$(docker exec "${container_name}" sh -lc "${summary_script}" 2>/dev/null || true)
+  found=$(echo "${found}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
   if [[ -z "${found}" ]]; then
     echo "未检测到"
   else
@@ -1868,12 +2436,16 @@ print_human_summary() {
   printf '\n===============================\n'
   if [[ "${action}" == "install" ]]; then
     echo "安装结果"
+  elif [[ "${action}" == "rebuild" ]]; then
+    echo "重建结果"
   else
     echo "升级结果"
   fi
   echo "==============================="
   if [[ "${action}" == "install" ]]; then
     echo "已完成主程序安装"
+  elif [[ "${action}" == "rebuild" ]]; then
+    echo "已完成容器安全重建"
   else
     echo "已完成主程序升级"
   fi
@@ -1914,6 +2486,8 @@ install_wizard() {
   local bind_choice="2"
   local bin_persist_choice="${DEFAULT_ENABLE_BIN_PERSIST}"
   local env_persist_choice="${DEFAULT_ENABLE_ENV_PERSIST}"
+  local apt_cfg_persist_choice="${DEFAULT_ENABLE_APT_CONFIG_PERSIST}"
+  local cache_persist_choice="${DEFAULT_ENABLE_CACHE_PERSIST}"
   local easy_choice="1"
   local token_mode="1"
   local token_manual=""
@@ -1944,6 +2518,7 @@ install_wizard() {
       echo "10) 依赖清单: 未启用"
     fi
     echo "11) 扩展端口映射: $(value_or_unset "${extra_ports}")"
+    echo "12) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
     echo "c) 确认并执行安装"
     echo "q) 取消并返回"
 
@@ -1980,7 +2555,8 @@ install_wizard() {
       6)
         echo "持久化策略说明："
         echo "  - 保留命令入口（bin）：升级后命令更不容易丢失（推荐）"
-        echo "  - 保留运行环境（env）：保留 go/uv/npm全局/pip用户环境，升级后更少重装，但占用更高"
+        echo "  - 保留运行环境（env）：保留 go/uv/npm全局/pip用户环境 + 常见授权配置(.config/.ssh/.gitconfig/.docker/.aws/.kube/.netrc/.npmrc/.pypirc)"
+        echo "    好处：升级后更少重装、登录态更容易保留；代价：占用更高且需注意敏感信息安全"
         echo "是否启用 保留命令入口（bin）:"
         echo "  1) 是"
         echo "  2) 否"
@@ -1989,6 +2565,19 @@ install_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
+        ;;
+      12)
+        echo "扩展持久化说明："
+        echo "  - APT源Key：持久化 /etc/apt/sources.list.d 与 /etc/apt/keyrings，便于 apt 回放更稳定"
+        echo "  - 缓存：持久化 /root/.npm 与 /root/go/pkg/mod，减少二次下载耗时"
+        echo "是否启用 APT源Key 持久化:"
+        echo "  1) 是"
+        echo "  2) 否"
+        apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
+        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "  1) 是"
+        echo "  2) 否"
+        cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
         ;;
       7)
         echo "是否安装 Easy CLI:"
@@ -2066,6 +2655,8 @@ install_wizard() {
         echo "网络绑定: ${gateway_bind}"
         echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
+        echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
+        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "Easy CLI: $(choice_to_yes_no "${easy_choice}")"
         echo "依赖补齐: $(choice_to_yes_no "${deps_install_choice}")"
         if [[ "${deps_install_choice}" == "1" ]]; then
@@ -2089,10 +2680,24 @@ install_wizard() {
         run_cmd docker pull "${image}"
         remove_container_if_exists "${name}"
         bootstrap_openclaw_config "${image}" "${data_dir}" "${container_port}" "${gateway_bind}" "${token}"
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}"
-        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
-
+        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+            log_error "APT 源目录初始化失败，已中止安装以避免空源配置"
+            continue
+          fi
+        fi
+        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
         local -a install_nonfatal_issues=()
+        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+          install_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+        fi
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+            install_nonfatal_issues+=("授权目录权限修正失败")
+          fi
+        fi
+
         if [[ "${easy_choice}" == "1" ]]; then
           if ! run_optional_step "Easy CLI 安装/升级" install_easy_cli "${data_dir}"; then
             install_nonfatal_issues+=("Easy CLI 安装/升级失败")
@@ -2112,7 +2717,7 @@ install_wizard() {
         local install_version install_status_text install_runtime_paths install_deps_installed
         install_version=$(detect_openclaw_version "${name}")
         install_status_text=$(get_container_status_text "${name}")
-        install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}")
+        install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
         install_deps_installed=$(detect_installed_deps_summary "${name}" "${target_deps}")
 
         local install_status="success"
@@ -2179,12 +2784,26 @@ upgrade_wizard() {
   if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
     env_persist_default=$(detect_persist_choice_from_container "${name}" "env" "${env_persist_default}")
   fi
+  local apt_cfg_persist_default
+  apt_cfg_persist_default=$(load_persistence_choice "${data_dir}" "APT_CFG_PERSIST" "${DEFAULT_ENABLE_APT_CONFIG_PERSIST}")
+  if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
+    apt_cfg_persist_default=$(detect_persist_choice_from_container "${name}" "aptcfg" "${apt_cfg_persist_default}")
+  fi
+  local cache_persist_default
+  cache_persist_default=$(load_persistence_choice "${data_dir}" "CACHE_PERSIST" "${DEFAULT_ENABLE_CACHE_PERSIST}")
+  if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
+    cache_persist_default=$(detect_persist_choice_from_container "${name}" "cache" "${cache_persist_default}")
+  fi
 
   local bin_persist_choice
   bin_persist_choice="${bin_persist_default}"
 
   local env_persist_choice
   env_persist_choice="${env_persist_default}"
+  local apt_cfg_persist_choice
+  apt_cfg_persist_choice="${apt_cfg_persist_default}"
+  local cache_persist_choice
+  cache_persist_choice="${cache_persist_default}"
 
   local easy_cli_upgrade
   easy_cli_upgrade="1"
@@ -2220,6 +2839,7 @@ upgrade_wizard() {
       echo "7) 依赖清单: 未启用"
     fi
     echo "8) 扩展端口映射: $(value_or_unset "${extra_ports}")"
+    echo "9) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
     echo "c) 确认并执行升级"
     echo "q) 取消并返回"
 
@@ -2245,6 +2865,9 @@ upgrade_wizard() {
         data_dir=$(read_with_default "持久化目录（安全升级会复用）" "${data_dir}")
         ;;
       4)
+        echo "持久化策略说明："
+        echo "  - env 启用后将持久化运行环境 + 常见授权配置（gh/ssh/docker/aws/kube 等）"
+        echo "  - 若涉及敏感密钥，请确保宿主机目录权限与备份策略安全"
         echo "是否启用 保留命令入口（bin）:"
         echo "  1) 是"
         echo "  2) 否"
@@ -2285,6 +2908,19 @@ upgrade_wizard() {
           log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
         fi
         ;;
+      9)
+        echo "扩展持久化说明："
+        echo "  - APT源Key：持久化 /etc/apt/sources.list.d 与 /etc/apt/keyrings，便于 apt 回放更稳定"
+        echo "  - 缓存：持久化 /root/.npm 与 /root/go/pkg/mod，减少二次下载耗时"
+        echo "是否启用 APT源Key 持久化:"
+        echo "  1) 是"
+        echo "  2) 否"
+        apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
+        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "  1) 是"
+        echo "  2) 否"
+        cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+        ;;
       c|C)
         if [[ -z "${image}" ]]; then
           log_error "请先在第1项选择目标版本镜像"
@@ -2300,6 +2936,8 @@ upgrade_wizard() {
         echo "持久化目录(保留): ${data_dir}"
         echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
+        echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
+        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "Easy CLI 检查升级: $(choice_to_yes_no "${easy_cli_upgrade}")"
         echo "升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
         if [[ "${deps_repair_choice}" == "1" ]]; then
@@ -2334,20 +2972,47 @@ upgrade_wizard() {
         run_cmd mkdir -p "${data_dir}"
         run_cmd docker pull "${image}"
 
-        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"; then
+        local -a upgrade_nonfatal_issues=()
+
+        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
           log_error "升级前 runtime 数据迁移失败；为避免数据丢失，已中止本次升级"
           continue
         fi
 
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
+            upgrade_nonfatal_issues+=("APT 手工包清单快照失败")
+          fi
+        fi
+
         remove_container_if_exists "${name}"
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}"
-        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}"
+        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+            log_error "APT 源目录初始化失败，已中止升级以避免空源配置"
+            continue
+          fi
+        fi
+        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+          upgrade_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+        fi
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+            upgrade_nonfatal_issues+=("授权目录权限修正失败")
+          fi
+        fi
+
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
+            upgrade_nonfatal_issues+=("APT 手工包回放安装失败")
+          fi
+        fi
 
         run_cmd docker ps --filter "name=${name}"
         run_cmd docker logs --tail 30 "${name}"
         run_cmd docker exec "${name}" openclaw --version
 
-        local -a upgrade_nonfatal_issues=()
         if [[ "${easy_cli_upgrade}" == "1" ]]; then
           if ! run_optional_step "Easy CLI 检查升级" check_and_upgrade_easy_cli "${data_dir}"; then
             upgrade_nonfatal_issues+=("Easy CLI 检查升级失败")
@@ -2377,11 +3042,306 @@ upgrade_wizard() {
         local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
         upgrade_version=$(detect_openclaw_version "${name}")
         upgrade_status_text=$(get_container_status_text "${name}")
-        upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}")
+        upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
         upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
         upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
         upgrade_token=$(detect_token_from_config "${data_dir}")
         print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}" "${extra_ports}"
+        return
+        ;;
+      q|Q)
+        log_info "已取消"
+        return
+        ;;
+      *)
+        log_error "无效选择"
+        ;;
+    esac
+  done
+}
+
+safe_rebuild_wizard() {
+  printf '\n=== 安全重建容器（清单模式） ===\n'
+  echo "流程：先检测 -> 自动开启未持久化项 -> 迁移 -> 重建"
+  local name
+  name=$(read_container_name "请输入要重建的容器名")
+
+  local default_data_dir="/opt/1panel/apps/${name}"
+  local detected_data_dir
+  detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
+
+  local port_pair
+  port_pair=$(detect_existing_ports "${name}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
+  local detected_host_port="${port_pair%%,*}"
+  local detected_container_port="${port_pair##*,}"
+
+  local image
+  image=$(detect_existing_image "${name}" "docker.io/openclaw/openclaw:latest")
+
+  local host_port="${detected_host_port}"
+  local container_port="${detected_container_port}"
+  local data_dir="${detected_data_dir}"
+  local extra_ports
+  extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
+
+  local bin_persist_default env_persist_default apt_cfg_persist_default cache_persist_default
+  bin_persist_default=$(load_persistence_choice "${data_dir}" "BIN_PERSIST" "${DEFAULT_ENABLE_BIN_PERSIST}")
+  env_persist_default=$(load_persistence_choice "${data_dir}" "ENV_PERSIST" "${DEFAULT_ENABLE_ENV_PERSIST}")
+  apt_cfg_persist_default=$(load_persistence_choice "${data_dir}" "APT_CFG_PERSIST" "${DEFAULT_ENABLE_APT_CONFIG_PERSIST}")
+  cache_persist_default=$(load_persistence_choice "${data_dir}" "CACHE_PERSIST" "${DEFAULT_ENABLE_CACHE_PERSIST}")
+  if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
+    bin_persist_default=$(detect_persist_choice_from_container "${name}" "bin" "${bin_persist_default}")
+    env_persist_default=$(detect_persist_choice_from_container "${name}" "env" "${env_persist_default}")
+    apt_cfg_persist_default=$(detect_persist_choice_from_container "${name}" "aptcfg" "${apt_cfg_persist_default}")
+    cache_persist_default=$(detect_persist_choice_from_container "${name}" "cache" "${cache_persist_default}")
+  fi
+
+  local bin_persist_choice="${bin_persist_default}"
+  local env_persist_choice="${env_persist_default}"
+  local apt_cfg_persist_choice="${apt_cfg_persist_default}"
+  local cache_persist_choice="${cache_persist_default}"
+
+  local saved_dep_set
+  saved_dep_set=$(load_dep_profile "${data_dir}")
+  if [[ ! -f "$(deps_profile_path "${data_dir}")" ]]; then
+    local detected_dep_set
+    detected_dep_set=$(detect_installed_deps_in_container "${name}")
+    if [[ -n "${detected_dep_set}" ]]; then
+      saved_dep_set=$(normalize_dep_list "${saved_dep_set} ${detected_dep_set}")
+    fi
+  fi
+  local deps_repair_choice="1"
+  local rebuild_dep_set="${saved_dep_set}"
+
+  print_upgrade_discovery_summary "${name}" "${data_dir}"
+
+  local -a auto_enabled=()
+  if [[ "${bin_persist_choice}" != "1" ]]; then
+    if container_path_has_data "${name}" "/root/.local/bin" || container_path_has_data "${name}" "/root/go/bin"; then
+      bin_persist_choice="1"
+      auto_enabled+=("bin")
+    fi
+  fi
+  if [[ "${env_persist_choice}" != "1" ]]; then
+    if container_path_has_data "${name}" "/usr/local/go" || \
+      container_path_has_data "${name}" "/usr/local/lib/node_modules" || \
+      container_path_has_data "${name}" "/root/.local/lib" || \
+      container_path_has_data "${name}" "/root/.local/share/uv" || \
+      container_path_has_data "${name}" "/root/.local/pipx" || \
+      container_path_has_data "${name}" "/root/.local/share/pipx" || \
+      container_path_has_data "${name}" "/root/.config" || \
+      container_path_has_data "${name}" "/root/.ssh" || \
+      container_path_has_data "${name}" "/root/.gitconfig" || \
+      container_path_has_data "${name}" "/root/.docker" || \
+      container_path_has_data "${name}" "/root/.aws" || \
+      container_path_has_data "${name}" "/root/.kube" || \
+      container_path_has_data "${name}" "/root/.netrc" || \
+      container_path_has_data "${name}" "/root/.npmrc" || \
+      container_path_has_data "${name}" "/root/.pypirc"; then
+      env_persist_choice="1"
+      auto_enabled+=("env")
+    fi
+  fi
+  if [[ "${apt_cfg_persist_choice}" != "1" ]]; then
+    if container_path_has_data "${name}" "/etc/apt/sources.list.d" || container_path_has_data "${name}" "/etc/apt/keyrings"; then
+      apt_cfg_persist_choice="1"
+      auto_enabled+=("aptcfg")
+    fi
+  fi
+  if [[ "${cache_persist_choice}" != "1" ]]; then
+    if container_path_has_data "${name}" "/root/.npm" || container_path_has_data "${name}" "/root/go/pkg/mod"; then
+      cache_persist_choice="1"
+      auto_enabled+=("cache")
+    fi
+  fi
+  if [[ "${#auto_enabled[@]}" -gt 0 ]]; then
+    log_info "已根据环境检测自动开启未持久化项: ${auto_enabled[*]}"
+  fi
+
+  while true; do
+    printf '\n=== 重建清单：%s ===\n' "${name}"
+    echo "1) 目标镜像: ${image}"
+    echo "2) 端口映射: ${host_port}:${container_port}"
+    echo "3) 持久化目录: ${data_dir}"
+    echo "4) 持久化策略: bin=$(choice_to_yes_no "${bin_persist_choice}"), env=$(choice_to_yes_no "${env_persist_choice}")"
+    echo "5) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
+    echo "6) 重建后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
+    if [[ "${deps_repair_choice}" == "1" ]]; then
+      echo "7) 依赖清单: $(deps_summary_line "${rebuild_dep_set}")"
+    else
+      echo "7) 依赖清单: 未启用"
+    fi
+    echo "8) 扩展端口映射: $(value_or_unset "${extra_ports}")"
+    echo "c) 确认并执行重建"
+    echo "q) 取消并返回"
+
+    local action
+    action=$(read_choice_default "请选择" "")
+    case "${action}" in
+      1)
+        image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+        ;;
+      2)
+        host_port=$(read_with_default "宿主机端口" "${host_port}")
+        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
+        ;;
+      3)
+        data_dir=$(read_with_default "持久化目录（重建会复用）" "${data_dir}")
+        ;;
+      4)
+        echo "是否启用 保留命令入口（bin）:"
+        echo "  1) 是"
+        echo "  2) 否"
+        bin_persist_choice=$(read_choice_default "请选择" "${bin_persist_choice}")
+        echo "是否启用 保留运行环境（env）:"
+        echo "  1) 是"
+        echo "  2) 否"
+        env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
+        ;;
+      5)
+        echo "是否启用 APT源Key 持久化:"
+        echo "  1) 是"
+        echo "  2) 否"
+        apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
+        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "  1) 是"
+        echo "  2) 否"
+        cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+        ;;
+      6)
+        echo "是否在重建完成后自动补齐依赖:"
+        echo "  1) 是"
+        echo "  2) 否"
+        deps_repair_choice=$(read_choice_default "请选择" "${deps_repair_choice}")
+        ;;
+      7)
+        if [[ "${deps_repair_choice}" == "1" ]]; then
+          rebuild_dep_set=$(prompt_dep_set "${rebuild_dep_set}")
+        else
+          log_info "当前依赖补齐未启用，请先在第6项启用"
+        fi
+        ;;
+      8)
+        local input_extra_ports
+        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
+        if [[ -z "${input_extra_ports}" ]]; then
+          extra_ports=""
+        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
+          extra_ports="${normalized_input_extra_ports}"
+        else
+          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
+        fi
+        ;;
+      c|C)
+        if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
+          continue
+        fi
+
+        printf '\n--- 执行清单（确认前） ---\n'
+        echo "容器名: ${name}"
+        echo "目标镜像: ${image}"
+        echo "端口映射: ${host_port}:${container_port}"
+        echo "持久化目录(保留): ${data_dir}"
+        echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
+        echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
+        echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
+        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
+        echo "重建后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
+        if [[ "${deps_repair_choice}" == "1" ]]; then
+          echo "依赖清单: ${rebuild_dep_set}"
+        fi
+        echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+
+        if is_container_running "${name}"; then
+          log_info "检测到容器 ${name} 正在运行，重建会中断当前任务。"
+          printf '容器正在运行，确认执行安全重建并中断当前任务? (y/N): '
+        else
+          printf '确认执行安全重建? (y/N): '
+        fi
+        local confirm
+        IFS= read -r confirm
+        if ! validate_yes_no "${confirm}"; then
+          log_info "已取消"
+          continue
+        fi
+
+        if ! run_preflight_checks "rebuild" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+          log_error "preflight 未通过，请修复后重试"
+          continue
+        fi
+
+        run_cmd mkdir -p "${data_dir}"
+        run_cmd docker pull "${image}"
+
+        local -a rebuild_nonfatal_issues=()
+        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
+          log_error "重建前 runtime 数据迁移失败；为避免数据丢失，已中止本次重建"
+          continue
+        fi
+
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
+            rebuild_nonfatal_issues+=("APT 手工包清单快照失败")
+          fi
+        fi
+
+        remove_container_if_exists "${name}"
+        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+            log_error "APT 源目录初始化失败，已中止重建以避免空源配置"
+            continue
+          fi
+        fi
+
+        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+
+        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+          rebuild_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+        fi
+        if [[ "${env_persist_choice}" == "1" ]]; then
+          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+            rebuild_nonfatal_issues+=("授权目录权限修正失败")
+          fi
+          if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
+            rebuild_nonfatal_issues+=("APT 手工包回放安装失败")
+          fi
+        fi
+
+        if [[ "${deps_repair_choice}" == "1" ]]; then
+          if run_optional_step "重建后依赖补齐" manage_container_runtime_deps "${name}" "install" "${rebuild_dep_set}"; then
+            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${rebuild_dep_set}" || true
+          else
+            rebuild_nonfatal_issues+=("重建后依赖补齐失败")
+          fi
+        fi
+
+        run_cmd docker ps --filter "name=${name}"
+        run_cmd docker logs --tail 30 "${name}"
+        run_cmd docker exec "${name}" openclaw --version
+
+        if [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]]; then
+          log_error "以下可选步骤失败（重建主流程已完成）:"
+          local issue
+          for issue in "${rebuild_nonfatal_issues[@]}"; do
+            log_error " - ${issue}"
+          done
+          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+        fi
+
+        local rebuild_status="success"
+        [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]] && rebuild_status="success_with_warnings"
+        write_last_report "rebuild" "${rebuild_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${rebuild_nonfatal_issues[@]}"
+
+        local rebuild_version rebuild_status_text rebuild_runtime_paths rebuild_deps_installed rebuild_gateway_bind rebuild_token
+        rebuild_version=$(detect_openclaw_version "${name}")
+        rebuild_status_text=$(get_container_status_text "${name}")
+        rebuild_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+        rebuild_deps_installed=$(detect_installed_deps_summary "${name}" "${rebuild_dep_set}")
+        rebuild_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+        rebuild_token=$(detect_token_from_config "${data_dir}")
+        print_human_summary "rebuild" "${name}" "${rebuild_version}" "${rebuild_status_text}" "${data_dir}" "${rebuild_runtime_paths}" "${rebuild_deps_installed}" "${rebuild_gateway_bind}" "${rebuild_token}" "${host_port}" "${extra_ports}"
         return
         ;;
       q|Q)
@@ -2538,6 +3498,7 @@ show_main_menu() {
   echo "3) 卸载（快捷模式）"
   echo "4) 仅升级 Easy CLI"
   echo "5) 组件与依赖管理"
+  echo "6) 安全重建容器（清单模式）"
   echo "0) 退出"
 }
 
@@ -2553,6 +3514,7 @@ main_loop() {
       3) uninstall_wizard ;;
       4) easy_cli_only_upgrade_wizard ;;
       5) deps_manage_wizard ;;
+      6) safe_rebuild_wizard ;;
       0)
         log_info "已退出"
         return
