@@ -5,7 +5,8 @@ DRY_RUN=0
 DEFAULT_HOST_PORT="4113"
 DEFAULT_CONTAINER_PORT="18789"
 DEFAULT_RESTART_POLICY="unless-stopped"
-EASY_CLI_REPO="https://github.com/moshall/Openclaw_Easy_Cli"
+EASYCLAW_REPO="https://github.com/moshall/easyclaw.git"
+EASYCLAW_DEFAULT_WEB_PORT="4231"
 DEFAULT_DEP_SET="npm uv"
 DEFAULT_ENABLE_BIN_PERSIST="1"
 DEFAULT_ENABLE_ENV_PERSIST="2"
@@ -196,6 +197,27 @@ read_choice_default() {
   else
     printf '%s\n' "${value}"
   fi
+}
+
+read_menu_choice() {
+  local prompt="$1"
+  local value
+  printf '%s: ' "${prompt}" >&2
+  IFS= read -r value
+  value=$(sanitize_user_input "${value}")
+  printf '%s\n' "${value}"
+}
+
+clear_interactive_screen() {
+  if [[ -t 1 && "${OPENCLAWCTL_NO_CLEAR:-0}" != "1" ]]; then
+    printf '\033[H\033[2J'
+  fi
+}
+
+press_enter_to_continue() {
+  printf '按回车返回: ' >&2
+  local dummy
+  IFS= read -r dummy
 }
 
 sanitize_user_input() {
@@ -731,12 +753,131 @@ pre_upgrade_migrate_runtime_data() {
   return 0
 }
 
-install_easy_cli() {
+easyclaw_target_dir() {
   local data_dir="$1"
-  local target_dir
-  target_dir=$(easy_cli_target_dir "${data_dir}")
+  echo "${data_dir}/software/easyclaw"
+}
 
-  maybe_migrate_easy_cli_dir "${data_dir}"
+easyclaw_container_install_dir() {
+  echo "/root/.openclaw/software/easyclaw"
+}
+
+ensure_easyclaw_web_port_mapping() {
+  local enabled="$1"
+  local host_port="$2"
+  local container_port="$3"
+  local extra_ports="${4:-}"
+
+  if [[ "${enabled}" != "1" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
+
+  if [[ "${host_port}" == "${EASYCLAW_DEFAULT_WEB_PORT}" || "${container_port}" == "${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
+
+  local token host_part container_part proto
+  for token in ${extra_ports}; do
+    [[ -z "${token}" ]] && continue
+    host_part="${token%%:*}"
+    container_part="${token#*:}"
+    proto="tcp"
+    if [[ "${container_part}" == */* ]]; then
+      proto="${container_part#*/}"
+      container_part="${container_part%%/*}"
+    fi
+    if [[ "${host_part}" == "${EASYCLAW_DEFAULT_WEB_PORT}" || "${container_part}" == "${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
+      echo "${extra_ports}"
+      return
+    fi
+  done
+
+  echo "${extra_ports}${extra_ports:+ }${EASYCLAW_DEFAULT_WEB_PORT}:${EASYCLAW_DEFAULT_WEB_PORT}"
+}
+
+should_enable_easyclaw_web_port() {
+  local requested="$1"
+  local container_name="${2:-}"
+  local data_dir="${3:-}"
+
+  if [[ "${requested}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${data_dir}" && -e "$(easyclaw_target_dir "${data_dir}")" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${container_name}" ]] && docker exec "${container_name}" sh -lc 'command -v easyclaw >/dev/null 2>&1 || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+run_easyclaw_install_script() {
+  local container_name="$1"
+  local script='set -e
+need_python=0
+if ! command -v python3 >/dev/null 2>&1; then
+  need_python=1
+fi
+need_venv=0
+if command -v python3 >/dev/null 2>&1; then
+  python3 -m venv -h >/dev/null 2>&1 || need_venv=1
+else
+  need_venv=1
+fi
+pm=""
+if command -v apt-get >/dev/null 2>&1; then
+  pm="apt"
+elif command -v apk >/dev/null 2>&1; then
+  pm="apk"
+elif command -v dnf >/dev/null 2>&1; then
+  pm="dnf"
+elif command -v yum >/dev/null 2>&1; then
+  pm="yum"
+fi
+if [ "$need_python" -eq 1 ] || [ "$need_venv" -eq 1 ]; then
+  case "$pm" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y python3 python3-venv
+      ;;
+    apk)
+      apk add --no-cache python3 py3-pip
+      ;;
+    dnf)
+      dnf install -y python3 python3-pip python3-virtualenv || dnf install -y python3 python3-pip
+      ;;
+    yum)
+      yum install -y python3 python3-pip python3-virtualenv || yum install -y python3 python3-pip
+      ;;
+    *)
+      echo "[easyclaw] no supported package manager found for python3/python3-venv"
+      exit 1
+      ;;
+  esac
+fi
+cd /root/.openclaw/software/easyclaw
+EASYCLAW_INSTALL_DIR=/root/.openclaw/software/easyclaw \
+EASYCLAW_BIN_DIR=/usr/local/bin \
+OPENCLAW_HOME=/root/.openclaw \
+EASYCLAW_WEB_PORT='"${EASYCLAW_DEFAULT_WEB_PORT}"' \
+bash install.sh'
+  run_cmd_brief "docker exec ${container_name} bash -lc <easyclaw-install-script>" \
+    docker exec "${container_name}" bash -lc "${script}"
+}
+
+install_easyclaw() {
+  local container_name="$1"
+  local data_dir="$2"
+  local target_dir
+  target_dir=$(easyclaw_target_dir "${data_dir}")
+
   run_cmd mkdir -p "$(dirname "${target_dir}")"
 
   if [[ "${OPENCLAWCTL_TEST_FORCE_EASYCLI_FAIL:-0}" == "1" ]]; then
@@ -744,35 +885,43 @@ install_easy_cli() {
   fi
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    run_cmd git clone "${EASY_CLI_REPO}" "${target_dir}"
+    if [[ -d "${target_dir}/.git" ]]; then
+      run_cmd git -C "${target_dir}" pull --ff-only
+    else
+      run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
+    fi
+    run_easyclaw_install_script "${container_name}"
     return
   fi
 
   if [[ -d "${target_dir}/.git" ]]; then
-    run_cmd git -C "${target_dir}" pull
+    run_cmd git -C "${target_dir}" pull --ff-only
   else
-    run_cmd git clone "${EASY_CLI_REPO}" "${target_dir}"
+    run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
   fi
-  ensure_easy_cli_workspace_link "${data_dir}"
+  run_easyclaw_install_script "${container_name}"
 }
 
-check_and_upgrade_easy_cli() {
-  local data_dir="$1"
+check_and_upgrade_easyclaw() {
+  local container_name="$1"
+  local data_dir="$2"
   local target_dir
-  target_dir=$(easy_cli_target_dir "${data_dir}")
-
-  maybe_migrate_easy_cli_dir "${data_dir}"
+  target_dir=$(easyclaw_target_dir "${data_dir}")
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
+    if [[ ! -d "${target_dir}/.git" ]]; then
+      run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
+    fi
     run_cmd git -C "${target_dir}" fetch --all --prune
     run_cmd git -C "${target_dir}" rev-list --left-right --count HEAD...@{upstream}
     run_cmd git -C "${target_dir}" pull --ff-only
+    run_easyclaw_install_script "${container_name}"
     return
   fi
 
   if [[ ! -d "${target_dir}/.git" ]]; then
-    log_info "未发现 Easy CLI 仓库，开始自动安装: ${target_dir}"
-    install_easy_cli "${data_dir}"
+    log_info "未发现 EasyClaw 仓库，开始自动安装: ${target_dir}"
+    install_easyclaw "${container_name}" "${data_dir}"
     return
   fi
 
@@ -781,7 +930,8 @@ check_and_upgrade_easy_cli() {
   local upstream
   upstream=$(git -C "${target_dir}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
   if [[ -z "${upstream}" ]]; then
-    log_info "Easy CLI 未配置上游分支，跳过版本检查"
+    log_info "EasyClaw 未配置上游分支，跳过版本检查"
+    run_easyclaw_install_script "${container_name}"
     return
   fi
 
@@ -790,85 +940,12 @@ check_and_upgrade_easy_cli() {
   read -r ahead behind <<<"${counts}"
 
   if [[ -n "${behind}" && "${behind}" -gt 0 ]]; then
-    log_info "检测到 Easy CLI 可升级（落后 ${behind} 个提交），开始升级"
+    log_info "检测到 EasyClaw 可升级（落后 ${behind} 个提交），开始升级"
     run_cmd git -C "${target_dir}" pull --ff-only
   else
-    log_info "Easy CLI 已是最新"
+    log_info "EasyClaw 已是最新"
   fi
-  ensure_easy_cli_workspace_link "${data_dir}"
-}
-
-easy_cli_target_dir() {
-  local data_dir="$1"
-  echo "${data_dir}/software/easy_cli"
-}
-
-easy_cli_workspace_link_path() {
-  local data_dir="$1"
-  echo "${data_dir}/workspace/software/easy_cli"
-}
-
-easy_cli_legacy_dir() {
-  local data_dir="$1"
-  echo "${data_dir}/Openclaw_Easy_Cli"
-}
-
-ensure_easy_cli_workspace_link() {
-  local data_dir="$1"
-  local link_path
-  link_path=$(easy_cli_workspace_link_path "${data_dir}")
-  local parent_dir
-  parent_dir=$(dirname "${link_path}")
-  local rel_target="../../software/easy_cli"
-
-  run_cmd mkdir -p "${parent_dir}"
-
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    if [[ ! -L "${link_path}" ]]; then
-      run_cmd ln -s "${rel_target}" "${link_path}"
-    fi
-    return
-  fi
-
-  if [[ -L "${link_path}" ]]; then
-    local current_target
-    current_target=$(readlink "${link_path}" || true)
-    if [[ "${current_target}" != "${rel_target}" ]]; then
-      run_cmd rm -f "${link_path}"
-      run_cmd ln -s "${rel_target}" "${link_path}"
-      log_info "已更新 Easy CLI workspace 兼容软链: ${link_path}"
-    fi
-    return
-  fi
-
-  if [[ -e "${link_path}" ]]; then
-    log_info "Easy CLI workspace 路径已存在非软链，跳过兼容软链创建: ${link_path}"
-    return
-  fi
-
-  run_cmd ln -s "${rel_target}" "${link_path}"
-  log_info "已创建 Easy CLI workspace 兼容软链: ${link_path}"
-}
-
-maybe_migrate_easy_cli_dir() {
-  local data_dir="$1"
-  local target_dir legacy_dir
-  target_dir=$(easy_cli_target_dir "${data_dir}")
-  legacy_dir=$(easy_cli_legacy_dir "${data_dir}")
-
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    if [[ -d "${legacy_dir}" && ! -e "${target_dir}" ]]; then
-      run_cmd mkdir -p "$(dirname "${target_dir}")"
-      run_cmd mv "${legacy_dir}" "${target_dir}"
-    fi
-    return
-  fi
-
-  if [[ -d "${legacy_dir}" && ! -e "${target_dir}" ]]; then
-    run_cmd mkdir -p "$(dirname "${target_dir}")"
-    run_cmd mv "${legacy_dir}" "${target_dir}"
-    log_info "已将 Easy CLI 目录迁移到: ${target_dir}"
-  fi
+  run_easyclaw_install_script "${container_name}"
 }
 
 normalize_dep_list() {
@@ -2195,6 +2272,111 @@ token_mode_label() {
   fi
 }
 
+source_choice_label() {
+  local source_choice="${1:-}"
+  case "${source_choice}" in
+    1) echo "官方" ;;
+    2) echo "中文版" ;;
+    *) echo "未选择" ;;
+  esac
+}
+
+channel_choice_label() {
+  local channel_choice="${1:-}"
+  case "${channel_choice}" in
+    1) echo "稳定版" ;;
+    2) echo "最新版" ;;
+    *) echo "未选择" ;;
+  esac
+}
+
+display_port_mappings() {
+  local mappings="${1:-}"
+  if [[ -z "${mappings}" ]]; then
+    echo "未配置"
+  else
+    printf '%s\n' "${mappings}" | sed 's/ /, /g'
+  fi
+}
+
+install_default_data_dir_desc() {
+  local name="${1:-}"
+  if [[ -n "${name}" ]]; then
+    echo "/opt/1panel/apps/${name}"
+  else
+    echo "/opt/1panel/apps/<容器名>"
+  fi
+}
+
+install_version_group_summary() {
+  local image="$1"
+  local source_choice="${2:-}"
+  local channel_choice="${3:-}"
+  if [[ -n "${source_choice}" || -n "${channel_choice}" ]]; then
+    echo "$(source_choice_label "${source_choice}") · $(channel_choice_label "${channel_choice}")"
+    return
+  fi
+  value_or_unset "${image}"
+}
+
+data_persistence_group_summary() {
+  local data_dir="$1"
+  local bin_choice="$2"
+  local env_choice="$3"
+  local apt_cfg_choice="${4:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local cache_choice="${5:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
+  local default_desc="${6:-}"
+  local dir_display="${data_dir}"
+  [[ -z "${dir_display}" ]] && dir_display="${default_desc}"
+  echo "目录=${dir_display} | bin=$(choice_to_yes_no "${bin_choice}") | env=$(choice_to_yes_no "${env_choice}") | APT源Key=$(choice_to_yes_no "${apt_cfg_choice}") | 缓存=$(choice_to_yes_no "${cache_choice}")"
+}
+
+network_group_summary() {
+  local bind_choice="$1"
+  local host_port="$2"
+  local container_port="$3"
+  local extra_ports="${4:-}"
+  local easyclaw_enabled="${5:-0}"
+  local extra_desc
+  extra_desc=$(display_port_mappings "${extra_ports}")
+  if [[ "${easyclaw_enabled}" == "1" ]]; then
+    echo "绑定=$(bind_choice_label "${bind_choice}") | 主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | EasyClaw Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
+  else
+    echo "绑定=$(bind_choice_label "${bind_choice}") | 主端口=${host_port}:${container_port} | 补充端口=${extra_desc}"
+  fi
+}
+
+network_group_summary_no_bind() {
+  local host_port="$1"
+  local container_port="$2"
+  local extra_ports="${3:-}"
+  local easyclaw_enabled="${4:-0}"
+  local extra_desc
+  extra_desc=$(display_port_mappings "${extra_ports}")
+  if [[ "${easyclaw_enabled}" == "1" ]]; then
+    echo "主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | EasyClaw Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
+  else
+    echo "主端口=${host_port}:${container_port} | 补充端口=${extra_desc}"
+  fi
+}
+
+feature_group_summary() {
+  local easy_choice="$1"
+  local deps_choice="$2"
+  local dep_set="$3"
+  if [[ "${deps_choice}" == "1" ]]; then
+    echo "EasyClaw=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=是 | $(deps_summary_line "${dep_set}")"
+  else
+    echo "EasyClaw=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=否"
+  fi
+}
+
+auth_group_summary() {
+  local token_mode="$1"
+  local token_manual="$2"
+  echo "Token=$(token_mode_label "${token_mode}" "${token_manual}")"
+}
+
 deps_summary_line() {
   local dep_set="$1"
   if [[ -z "${dep_set}" ]]; then
@@ -2467,8 +2649,10 @@ print_human_summary() {
   echo "官方Cli命令："
   echo "docker exec -it ${container_name} openclaw onboard"
   echo
-  echo "EasyCli快捷配置三方模型："
-  echo "docker exec -it ${container_name} sh -lc 'python3 \"\$HOME/.openclaw/workspace/software/easy_cli/claw-commander.py\" || python3 \"\$HOME/.openclaw/software/easy_cli/claw-commander.py\"'"
+  echo "EasyClaw 管理工具："
+  echo "docker exec -it ${container_name} easyclaw tui"
+  echo "docker exec -it ${container_name} easyclaw web --port ${EASYCLAW_DEFAULT_WEB_PORT}"
+  echo "若已启动 Web UI，可访问：http://Your Host IP:${EASYCLAW_DEFAULT_WEB_PORT}/"
   echo
   echo "后续可使用本脚本进行更新检查并升级程序"
   echo "持久化信息在升级后会继续保留"
@@ -2496,34 +2680,21 @@ install_wizard() {
   local extra_ports=""
 
   while true; do
-    printf '\n=== 新装（清单模式） ===\n'
-    echo "按编号编辑，c确认执行，q返回主菜单"
+    clear_interactive_screen
+    printf '\n=== 🚀 安装新实例 ===\n'
+    echo "按编号编辑，修改后会回到这张总表；c 确认执行，q 返回主菜单"
     echo
-    echo "1) 版本镜像: $(value_or_unset "${image}")"
-    echo "2) 容器名: $(value_or_unset "${name}")"
-    echo "3) 端口映射: ${host_port}:${container_port}"
-    if [[ -n "${data_dir}" ]]; then
-      echo "4) 持久化目录: ${data_dir}"
-    else
-      echo "4) 持久化目录: 未选择（默认 /opt/1panel/apps/<容器名>）"
-    fi
-    echo "5) 网络绑定: $(bind_choice_label "${bind_choice}")"
-    echo "6) 持久化策略: bin=$(choice_to_yes_no "${bin_persist_choice}"), env=$(choice_to_yes_no "${env_persist_choice}")"
-    echo "7) Easy CLI: $(choice_to_yes_no "${easy_choice}")"
-    echo "8) Token: $(token_mode_label "${token_mode}" "${token_manual}")"
-    echo "9) 依赖补齐: $(choice_to_yes_no "${deps_install_choice}")"
-    if [[ "${deps_install_choice}" == "1" ]]; then
-      echo "10) 依赖清单: $(deps_summary_line "${target_deps}")"
-    else
-      echo "10) 依赖清单: 未启用"
-    fi
-    echo "11) 扩展端口映射: $(value_or_unset "${extra_ports}")"
-    echo "12) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
+    echo "1) 📦 版本镜像选择: $(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
+    echo "2) 🐳 容器名: $(value_or_unset "${name}")"
+    echo "3) 💾 持久化目录管理: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "$(install_default_data_dir_desc "${name}")")"
+    echo "4) 🌐 网络设置: $(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
+    echo "5) 🧩 功能加强: $(feature_group_summary "${easy_choice}" "${deps_install_choice}" "${target_deps}")"
+    echo "6) 🔐 鉴权方式管理: $(auth_group_summary "${token_mode}" "${token_manual}")"
     echo "c) 确认并执行安装"
     echo "q) 取消并返回"
 
     local action
-    action=$(read_choice_default "请选择" "")
+    action=$(read_menu_choice "请选择分组")
     case "${action}" in
       1)
         echo "版本来源:"
@@ -2535,41 +2706,22 @@ install_wizard() {
         echo "  2) 最新版"
         channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
         image=$(resolve_image "${source_choice}" "${channel_choice}") || image=""
+        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
         ;;
       2)
         name=$(read_container_name "Docker 容器名")
+        log_info "已更新：容器名=${name}"
         ;;
       3)
-        host_port=$(read_with_default "宿主机端口" "${host_port}")
-        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        ;;
-      4)
         data_dir=$(read_with_default "持久化目录" "${data_dir:-/opt/1panel/apps/${name:-openclaw}}")
-        ;;
-      5)
-        echo "网络绑定:"
-        echo "  1) local"
-        echo "  2) lan"
-        bind_choice=$(read_choice_default "请选择" "${bind_choice}")
-        ;;
-      6)
-        echo "持久化策略说明："
-        echo "  - 保留命令入口（bin）：升级后命令更不容易丢失（推荐）"
-        echo "  - 保留运行环境（env）：保留 go/uv/npm全局/pip用户环境 + 常见授权配置(.config/.ssh/.gitconfig/.docker/.aws/.kube/.netrc/.npmrc/.pypirc)"
-        echo "    好处：升级后更少重装、登录态更容易保留；代价：占用更高且需注意敏感信息安全"
-        echo "是否启用 保留命令入口（bin）:"
+        echo "是否启用 内容持久化（bin）:"
         echo "  1) 是"
         echo "  2) 否"
         bin_persist_choice=$(read_choice_default "请选择" "${bin_persist_choice}")
-        echo "是否启用 保留运行环境（env）:"
+        echo "是否启用 运行环境持久化（env）:"
         echo "  1) 是"
         echo "  2) 否"
         env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
-        ;;
-      12)
-        echo "扩展持久化说明："
-        echo "  - APT源Key：持久化 /etc/apt/sources.list.d 与 /etc/apt/keyrings，便于 apt 回放更稳定"
-        echo "  - 缓存：持久化 /root/.npm 与 /root/go/pkg/mod，减少二次下载耗时"
         echo "是否启用 APT源Key 持久化:"
         echo "  1) 是"
         echo "  2) 否"
@@ -2578,36 +2730,15 @@ install_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+        log_info "已更新：$(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "$(install_default_data_dir_desc "${name}")")"
         ;;
-      7)
-        echo "是否安装 Easy CLI:"
-        echo "  1) 是"
-        echo "  2) 否"
-        easy_choice=$(read_choice_default "请选择" "${easy_choice}")
-        ;;
-      8)
-        echo "Token 方式:"
-        echo "  1) 自动生成"
-        echo "  2) 手动输入"
-        token_mode=$(read_choice_default "请选择" "${token_mode}")
-        if [[ "${token_mode}" == "2" ]]; then
-          token_manual=$(read_required "请输入 token")
-        fi
-        ;;
-      9)
-        echo "是否自动检测并补齐容器依赖:"
-        echo "  1) 是（推荐）"
-        echo "  2) 否"
-        deps_install_choice=$(read_choice_default "请选择" "${deps_install_choice}")
-        ;;
-      10)
-        if [[ "${deps_install_choice}" == "1" ]]; then
-          target_deps=$(prompt_dep_set "${target_deps}")
-        else
-          log_info "当前依赖补齐未启用，请先在第9项启用"
-        fi
-        ;;
-      11)
+      4)
+        echo "网络绑定:"
+        echo "  1) local"
+        echo "  2) lan"
+        bind_choice=$(read_choice_default "请选择" "${bind_choice}")
+        host_port=$(read_with_default "宿主机端口" "${host_port}")
+        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
         local input_extra_ports
         input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
         input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
@@ -2616,23 +2747,48 @@ install_wizard() {
         elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
           extra_ports="${normalized_input_extra_ports}"
         else
-          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
+          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
         fi
+        log_info "已更新：$(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
+        ;;
+      5)
+        echo "是否安装 EasyClaw:"
+        echo "  1) 是"
+        echo "  2) 否"
+        easy_choice=$(read_choice_default "请选择" "${easy_choice}")
+        echo "是否自动检测并补齐容器依赖:"
+        echo "  1) 是（推荐）"
+        echo "  2) 否"
+        deps_install_choice=$(read_choice_default "请选择" "${deps_install_choice}")
+        if [[ "${deps_install_choice}" == "1" ]]; then
+          target_deps=$(prompt_dep_set "${target_deps}")
+        fi
+        log_info "已更新：$(feature_group_summary "${easy_choice}" "${deps_install_choice}" "${target_deps}")"
+        ;;
+      6)
+        echo "Token 方式:"
+        echo "  1) 自动生成"
+        echo "  2) 手动输入"
+        token_mode=$(read_choice_default "请选择" "${token_mode}")
+        if [[ "${token_mode}" == "2" ]]; then
+          token_manual=$(read_required "请输入 token")
+        fi
+        log_info "已更新：$(auth_group_summary "${token_mode}" "${token_manual}")"
         ;;
       c|C)
         if [[ -z "${image}" ]]; then
-          log_error "请先在第1项选择版本镜像"
+          log_error "请先完成“版本镜像选择”"
           continue
         fi
         if [[ -z "${name}" ]]; then
-          log_error "请先在第2项填写容器名"
+          log_error "请先填写容器名"
           continue
         fi
         if [[ -z "${data_dir}" ]]; then
           data_dir="/opt/1panel/apps/${name}"
         fi
         if [[ "${token_mode}" == "2" && -z "${token_manual}" ]]; then
-          log_error "Token 为手动模式，请在第8项填写 token"
+          log_error "Token 为手动模式，请先在“鉴权方式管理”中填写 token"
           continue
         fi
         if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
@@ -2647,6 +2803,9 @@ install_wizard() {
         fi
         gateway_bind=$(bind_choice_label "${bind_choice}")
 
+        if should_enable_easyclaw_web_port "${easy_choice}" "" "${data_dir}"; then
+          extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        fi
         printf '\n--- 执行清单（确认前） ---\n'
         echo "镜像: ${image}"
         echo "容器名: ${name}"
@@ -2657,7 +2816,7 @@ install_wizard() {
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
         echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
-        echo "Easy CLI: $(choice_to_yes_no "${easy_choice}")"
+        echo "EasyClaw: $(choice_to_yes_no "${easy_choice}")"
         echo "依赖补齐: $(choice_to_yes_no "${deps_install_choice}")"
         if [[ "${deps_install_choice}" == "1" ]]; then
           echo "依赖清单: ${target_deps}"
@@ -2699,8 +2858,8 @@ install_wizard() {
         fi
 
         if [[ "${easy_choice}" == "1" ]]; then
-          if ! run_optional_step "Easy CLI 安装/升级" install_easy_cli "${data_dir}"; then
-            install_nonfatal_issues+=("Easy CLI 安装/升级失败")
+          if ! run_optional_step "EasyClaw 安装/升级" install_easyclaw "${name}" "${data_dir}"; then
+            install_nonfatal_issues+=("EasyClaw 安装/升级失败")
           fi
         fi
 
@@ -2728,7 +2887,7 @@ install_wizard() {
           for issue in "${install_nonfatal_issues[@]}"; do
             log_error " - ${issue}"
           done
-          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
         fi
         write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
         print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
@@ -2746,8 +2905,8 @@ install_wizard() {
 }
 
 upgrade_wizard() {
-  printf '\n=== 升级（安全升级 / 清单模式） ===\n'
-  echo "按编号编辑，c确认执行，q返回主菜单"
+  printf '\n=== 🔄 升级已有实例 ===\n'
+  echo "按编号编辑，修改后会回到这张总表；升级会尽量保留原有数据、挂载和运行环境"
   local name
   name=$(read_container_name "请输入要升级的容器名")
 
@@ -2805,8 +2964,8 @@ upgrade_wizard() {
   local cache_persist_choice
   cache_persist_choice="${cache_persist_default}"
 
-  local easy_cli_upgrade
-  easy_cli_upgrade="1"
+  local easyclaw_upgrade
+  easyclaw_upgrade="1"
 
   local saved_dep_set
   saved_dep_set=$(load_dep_profile "${data_dir}")
@@ -2826,25 +2985,18 @@ upgrade_wizard() {
   print_upgrade_discovery_summary "${name}" "${data_dir}"
 
   while true; do
-    printf '\n=== 升级清单：%s ===\n' "${name}"
-    echo "1) 目标版本镜像: $(value_or_unset "${image}")"
-    echo "2) 端口映射: ${host_port}:${container_port}"
-    echo "3) 持久化目录: ${data_dir}"
-    echo "4) 持久化策略: bin=$(choice_to_yes_no "${bin_persist_choice}"), env=$(choice_to_yes_no "${env_persist_choice}")"
-    echo "5) Easy CLI 检查升级: $(choice_to_yes_no "${easy_cli_upgrade}")"
-    echo "6) 升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
-    if [[ "${deps_repair_choice}" == "1" ]]; then
-      echo "7) 依赖清单: $(deps_summary_line "${upgrade_dep_set}")"
-    else
-      echo "7) 依赖清单: 未启用"
-    fi
-    echo "8) 扩展端口映射: $(value_or_unset "${extra_ports}")"
-    echo "9) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
+    clear_interactive_screen
+    printf '\n=== 🔄 升级已有实例：%s ===\n' "${name}"
+    echo "1) 📦 目标版本: $(value_or_unset "${image}")"
+    echo "2) 💾 数据保存: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
+    echo "3) 🌐 网络访问: $(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
+    echo "4) 🧩 功能加强: $(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}")"
+    echo "5) 🔎 查看升级前检测摘要"
     echo "c) 确认并执行升级"
     echo "q) 取消并返回"
 
     local action
-    action=$(read_choice_default "请选择" "")
+    action=$(read_menu_choice "请选择分组")
     case "${action}" in
       1)
         echo "目标版本来源:"
@@ -2856,62 +3008,18 @@ upgrade_wizard() {
         echo "  2) 最新版"
         channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
         image=$(resolve_image "${source_choice}" "${channel_choice}") || image=""
+        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
         ;;
       2)
-        host_port=$(read_with_default "宿主机端口" "${host_port}")
-        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        ;;
-      3)
         data_dir=$(read_with_default "持久化目录（安全升级会复用）" "${data_dir}")
-        ;;
-      4)
-        echo "持久化策略说明："
-        echo "  - env 启用后将持久化运行环境 + 常见授权配置（gh/ssh/docker/aws/kube 等）"
-        echo "  - 若涉及敏感密钥，请确保宿主机目录权限与备份策略安全"
-        echo "是否启用 保留命令入口（bin）:"
+        echo "是否启用 内容持久化（bin）:"
         echo "  1) 是"
         echo "  2) 否"
         bin_persist_choice=$(read_choice_default "请选择" "${bin_persist_choice}")
-        echo "是否启用 保留运行环境（env）:"
+        echo "是否启用 运行环境持久化（env）:"
         echo "  1) 是"
         echo "  2) 否"
         env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
-        ;;
-      5)
-        echo "是否检查并升级 Easy CLI:"
-        echo "  1) 是"
-        echo "  2) 否"
-        easy_cli_upgrade=$(read_choice_default "请选择" "${easy_cli_upgrade}")
-        ;;
-      6)
-        echo "是否在升级完成后自动补齐依赖:"
-        echo "  1) 是"
-        echo "  2) 否"
-        deps_repair_choice=$(read_choice_default "请选择" "${deps_repair_choice}")
-        ;;
-      7)
-        if [[ "${deps_repair_choice}" == "1" ]]; then
-          upgrade_dep_set=$(prompt_dep_set "${upgrade_dep_set}")
-        else
-          log_info "当前依赖补齐未启用，请先在第6项启用"
-        fi
-        ;;
-      8)
-        local input_extra_ports
-        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
-        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
-        if [[ -z "${input_extra_ports}" ]]; then
-          extra_ports=""
-        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
-          extra_ports="${normalized_input_extra_ports}"
-        else
-          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
-        fi
-        ;;
-      9)
-        echo "扩展持久化说明："
-        echo "  - APT源Key：持久化 /etc/apt/sources.list.d 与 /etc/apt/keyrings，便于 apt 回放更稳定"
-        echo "  - 缓存：持久化 /root/.npm 与 /root/go/pkg/mod，减少二次下载耗时"
         echo "是否启用 APT源Key 持久化:"
         echo "  1) 是"
         echo "  2) 否"
@@ -2920,15 +3028,53 @@ upgrade_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+        log_info "已更新：$(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
+        ;;
+      3)
+        host_port=$(read_with_default "宿主机端口" "${host_port}")
+        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
+        local input_extra_ports
+        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
+        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
+        if [[ -z "${input_extra_ports}" ]]; then
+          extra_ports=""
+        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
+          extra_ports="${normalized_input_extra_ports}"
+        else
+          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
+        fi
+        log_info "已更新：$(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
+        ;;
+      4)
+        echo "是否检查并升级 EasyClaw:"
+        echo "  1) 是"
+        echo "  2) 否"
+        easyclaw_upgrade=$(read_choice_default "请选择" "${easyclaw_upgrade}")
+        echo "是否在升级完成后自动补齐依赖:"
+        echo "  1) 是"
+        echo "  2) 否"
+        deps_repair_choice=$(read_choice_default "请选择" "${deps_repair_choice}")
+        if [[ "${deps_repair_choice}" == "1" ]]; then
+          upgrade_dep_set=$(prompt_dep_set "${upgrade_dep_set}")
+        fi
+        log_info "已更新：$(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}")"
+        ;;
+      5)
+        print_upgrade_discovery_summary "${name}" "${data_dir}"
+        press_enter_to_continue
         ;;
       c|C)
         if [[ -z "${image}" ]]; then
-          log_error "请先在第1项选择目标版本镜像"
+          log_error "请先完成“目标版本”设置"
           continue
         fi
         if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
           continue
         fi
+        if should_enable_easyclaw_web_port "${easyclaw_upgrade}" "${name}" "${data_dir}"; then
+          extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        fi
+
         printf '\n--- 执行清单（确认前） ---\n'
         echo "容器名: ${name}"
         echo "目标镜像: ${image}"
@@ -2938,7 +3084,7 @@ upgrade_wizard() {
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
         echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
-        echo "Easy CLI 检查升级: $(choice_to_yes_no "${easy_cli_upgrade}")"
+        echo "EasyClaw 检查升级: $(choice_to_yes_no "${easyclaw_upgrade}")"
         echo "升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${upgrade_dep_set}"
@@ -3013,9 +3159,9 @@ upgrade_wizard() {
         run_cmd docker logs --tail 30 "${name}"
         run_cmd docker exec "${name}" openclaw --version
 
-        if [[ "${easy_cli_upgrade}" == "1" ]]; then
-          if ! run_optional_step "Easy CLI 检查升级" check_and_upgrade_easy_cli "${data_dir}"; then
-            upgrade_nonfatal_issues+=("Easy CLI 检查升级失败")
+        if [[ "${easyclaw_upgrade}" == "1" ]]; then
+          if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+            upgrade_nonfatal_issues+=("EasyClaw 检查升级失败")
           fi
         fi
 
@@ -3033,7 +3179,7 @@ upgrade_wizard() {
           for issue in "${upgrade_nonfatal_issues[@]}"; do
             log_error " - ${issue}"
           done
-          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
         fi
         local upgrade_status="success"
         [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]] && upgrade_status="success_with_warnings"
@@ -3061,8 +3207,8 @@ upgrade_wizard() {
 }
 
 safe_rebuild_wizard() {
-  printf '\n=== 安全重建容器（清单模式） ===\n'
-  echo "流程：先检测 -> 自动开启未持久化项 -> 迁移 -> 重建"
+  printf '\n=== 🛠️ 调整或重建实例 ===\n'
+  echo "适用于新增端口、补持久化、调整挂载后需要安全重建容器的场景"
   local name
   name=$(read_container_name "请输入要重建的容器名")
 
@@ -3159,46 +3305,33 @@ safe_rebuild_wizard() {
   fi
 
   while true; do
-    printf '\n=== 重建清单：%s ===\n' "${name}"
-    echo "1) 目标镜像: ${image}"
-    echo "2) 端口映射: ${host_port}:${container_port}"
-    echo "3) 持久化目录: ${data_dir}"
-    echo "4) 持久化策略: bin=$(choice_to_yes_no "${bin_persist_choice}"), env=$(choice_to_yes_no "${env_persist_choice}")"
-    echo "5) 扩展持久化: apt源Key=$(choice_to_yes_no "${apt_cfg_persist_choice}"), 缓存(.npm/go mod)=$(choice_to_yes_no "${cache_persist_choice}")"
-    echo "6) 重建后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
-    if [[ "${deps_repair_choice}" == "1" ]]; then
-      echo "7) 依赖清单: $(deps_summary_line "${rebuild_dep_set}")"
-    else
-      echo "7) 依赖清单: 未启用"
-    fi
-    echo "8) 扩展端口映射: $(value_or_unset "${extra_ports}")"
+    clear_interactive_screen
+    printf '\n=== 🛠️ 调整或重建实例：%s ===\n' "${name}"
+    echo "1) 🐳 实例信息: 容器=${name} | 镜像=${image}"
+    echo "2) 💾 数据保存: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
+    echo "3) 🌐 网络访问: $(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "1")"
+    echo "4) 🧩 功能加强: $(if [[ "${deps_repair_choice}" == "1" ]]; then echo "依赖补齐=是 | $(deps_summary_line "${rebuild_dep_set}")"; else echo "依赖补齐=否"; fi)"
+    echo "5) 🔎 查看重建前检测摘要"
     echo "c) 确认并执行重建"
     echo "q) 取消并返回"
 
     local action
-    action=$(read_choice_default "请选择" "")
+    action=$(read_menu_choice "请选择分组")
     case "${action}" in
       1)
         image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+        log_info "已更新：镜像=${image}"
         ;;
       2)
-        host_port=$(read_with_default "宿主机端口" "${host_port}")
-        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        ;;
-      3)
         data_dir=$(read_with_default "持久化目录（重建会复用）" "${data_dir}")
-        ;;
-      4)
-        echo "是否启用 保留命令入口（bin）:"
+        echo "是否启用 内容持久化（bin）:"
         echo "  1) 是"
         echo "  2) 否"
         bin_persist_choice=$(read_choice_default "请选择" "${bin_persist_choice}")
-        echo "是否启用 保留运行环境（env）:"
+        echo "是否启用 运行环境持久化（env）:"
         echo "  1) 是"
         echo "  2) 否"
         env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
-        ;;
-      5)
         echo "是否启用 APT源Key 持久化:"
         echo "  1) 是"
         echo "  2) 否"
@@ -3207,21 +3340,11 @@ safe_rebuild_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+        log_info "已更新：$(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
         ;;
-      6)
-        echo "是否在重建完成后自动补齐依赖:"
-        echo "  1) 是"
-        echo "  2) 否"
-        deps_repair_choice=$(read_choice_default "请选择" "${deps_repair_choice}")
-        ;;
-      7)
-        if [[ "${deps_repair_choice}" == "1" ]]; then
-          rebuild_dep_set=$(prompt_dep_set "${rebuild_dep_set}")
-        else
-          log_info "当前依赖补齐未启用，请先在第6项启用"
-        fi
-        ;;
-      8)
+      3)
+        host_port=$(read_with_default "宿主机端口" "${host_port}")
+        container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
         local input_extra_ports
         input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
         input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
@@ -3230,13 +3353,29 @@ safe_rebuild_wizard() {
         elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
           extra_ports="${normalized_input_extra_ports}"
         else
-          log_error "扩展端口映射输入无效，已保留原配置: $(value_or_unset "${extra_ports}")"
+          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
         fi
+        log_info "已更新：$(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "1")"
+        ;;
+      4)
+        echo "是否在重建完成后自动补齐依赖:"
+        echo "  1) 是"
+        echo "  2) 否"
+        deps_repair_choice=$(read_choice_default "请选择" "${deps_repair_choice}")
+        if [[ "${deps_repair_choice}" == "1" ]]; then
+          rebuild_dep_set=$(prompt_dep_set "${rebuild_dep_set}")
+        fi
+        log_info "已更新：$(if [[ "${deps_repair_choice}" == "1" ]]; then echo "依赖补齐=是 | $(deps_summary_line "${rebuild_dep_set}")"; else echo "依赖补齐=否"; fi)"
+        ;;
+      5)
+        print_upgrade_discovery_summary "${name}" "${data_dir}"
+        press_enter_to_continue
         ;;
       c|C)
         if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
           continue
         fi
+        extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
 
         printf '\n--- 执行清单（确认前） ---\n'
         echo "容器名: ${name}"
@@ -3327,7 +3466,7 @@ safe_rebuild_wizard() {
           for issue in "${rebuild_nonfatal_issues[@]}"; do
             log_error " - ${issue}"
           done
-          log_info "可稍后通过菜单 5) 组件与依赖管理 重新执行补齐"
+          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
         fi
 
         local rebuild_status="success"
@@ -3356,8 +3495,8 @@ safe_rebuild_wizard() {
 }
 
 uninstall_wizard() {
-  printf '\n=== 卸载（快捷模式） ===\n'
-  echo "流程：选择模式 -> 二次确认容器名 -> 执行"
+  printf '\n=== 🗑️ 卸载实例 ===\n'
+  echo "流程：选择卸载方式 -> 二次确认容器名 -> 执行"
   local name
   name=$(read_container_name "请输入要卸载的容器名")
 
@@ -3389,8 +3528,8 @@ uninstall_wizard() {
   fi
 }
 
-easy_cli_only_upgrade_wizard() {
-  printf '\n=== 仅升级 Easy CLI ===\n'
+easyclaw_only_upgrade_wizard() {
+  printf '\n=== 📦 管理 EasyClaw 工具 ===\n'
   local name
   name=$(read_container_name "请输入容器名（用于定位持久化目录）")
 
@@ -3399,12 +3538,12 @@ easy_cli_only_upgrade_wizard() {
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
   local data_dir
-  data_dir=$(read_with_default "Easy CLI 所在持久化目录" "${detected_data_dir}")
+  data_dir=$(read_with_default "EasyClaw 所在持久化目录" "${detected_data_dir}")
 
-  printf '\n--- 任务预览 ---\n'
+  printf '\n--- 当前操作：升级或重装 EasyClaw ---\n'
   echo "容器名: ${name}"
-  echo "Easy CLI 目录: $(easy_cli_target_dir "${data_dir}")"
-  printf '确认仅升级 Easy CLI? (y/N): '
+  echo "EasyClaw 目录: $(easyclaw_target_dir "${data_dir}")"
+  printf '确认执行 EasyClaw 升级/重装? (y/N): '
   local confirm
   IFS= read -r confirm
   if ! validate_yes_no "${confirm}"; then
@@ -3412,23 +3551,23 @@ easy_cli_only_upgrade_wizard() {
     return
   fi
 
-  if ! run_preflight_checks "easy-cli-upgrade" "${name}" "${data_dir}"; then
+  if ! run_preflight_checks "easyclaw-upgrade" "${name}" "${data_dir}"; then
     log_error "preflight 未通过，请修复后重试"
     return
   fi
 
   local -a easy_nonfatal_issues=()
-  if ! run_optional_step "Easy CLI 检查升级" check_and_upgrade_easy_cli "${data_dir}"; then
-    easy_nonfatal_issues+=("Easy CLI 检查升级失败")
+  if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+    easy_nonfatal_issues+=("EasyClaw 检查升级失败")
   fi
   local easy_status="success"
   [[ "${#easy_nonfatal_issues[@]}" -gt 0 ]] && easy_status="success_with_warnings"
-  write_last_report "easy-cli-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
+  write_last_report "easyclaw-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
 }
 
 deps_manage_wizard() {
-  printf '\n=== 组件与依赖管理 ===\n'
-  echo "提示：用于单独补齐容器依赖，不重建 OpenClaw 容器。"
+  printf '\n=== 🔧 检查或补齐运行环境 ===\n'
+  echo "提示：用于单独检查或补齐容器依赖，不重建 OpenClaw 容器。"
   local name
   name=$(read_container_name "请输入容器名")
 
@@ -3489,16 +3628,17 @@ deps_manage_wizard() {
 }
 
 show_main_menu() {
+  clear_interactive_screen
   echo
   echo "==============================="
-  echo " OpenClaw 交互式部署助手（清单）"
+  echo " OpenClaw 部署助手"
   echo "==============================="
-  echo "1) 新装（清单模式）"
-  echo "2) 升级（安全升级 / 清单模式）"
-  echo "3) 卸载（快捷模式）"
-  echo "4) 仅升级 Easy CLI"
-  echo "5) 组件与依赖管理"
-  echo "6) 安全重建容器（清单模式）"
+  echo "1) 🚀 安装新实例"
+  echo "2) 🔄 升级已有实例"
+  echo "3) 🛠️ 调整或重建实例"
+  echo "4) 📦 管理 EasyClaw 工具"
+  echo "5) 🔧 检查或补齐运行环境"
+  echo "6) 🗑️ 卸载实例"
   echo "0) 退出"
 }
 
@@ -3511,10 +3651,10 @@ main_loop() {
     case "${choice}" in
       1) install_wizard ;;
       2) upgrade_wizard ;;
-      3) uninstall_wizard ;;
-      4) easy_cli_only_upgrade_wizard ;;
+      3) safe_rebuild_wizard ;;
+      4) easyclaw_only_upgrade_wizard ;;
       5) deps_manage_wizard ;;
-      6) safe_rebuild_wizard ;;
+      6) uninstall_wizard ;;
       0)
         log_info "已退出"
         return
