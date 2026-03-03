@@ -64,6 +64,8 @@ bash ./openclawctl.sh --dry-run
 补充：
 
 - 官方源支持自动拉取 tag 并手动选择具体版本（例如 `2026.2.26`）。
+- 升级/安装前会校验官方 tag 是否存在；若不存在会打印可选 tag，并自动回退到最近可用版本。
+- 兼容短 tag 输入（如 `260226`），会优先尝试映射到 `2026.2.26`。
 - 可通过 `OPENCLAW_OFFICIAL_REPO` 覆盖官方仓库（例如 `alpine/openclaw`）。
 - 为保证 `.openclaw` 路径一致，脚本统一以 `--user root` 执行 OpenClaw 配置与容器启动。
 
@@ -85,6 +87,8 @@ bash ./openclawctl.sh --dry-run
   - 可显式放行：`OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1`
 - 升级前兼容修复：`openclaw doctor --fix`
 - `lan` 绑定下自动尝试写入 Control UI 兼容项（不支持的旧键会自动跳过，不阻断主流程）。
+- APT 手工包回放前会先校验 `sources.list.d` 格式，并自动隔离异常源文件，降低升级后依赖补齐失败概率。
+- 支持严格非交互模式：用于批量回归时输出固定路径 JSON 报告（`runtime/strict-report.json`）。
 
 ## Docker 与环境补齐
 
@@ -103,6 +107,7 @@ bash ./openclawctl.sh --dry-run
 - `OPENCLAWCTL_ALLOWED_ORIGINS`：Control UI 显式 allowed origins。
 - `OPENCLAWCTL_TRUSTED_PROXIES`：网关 trusted proxies。
 - `OPENCLAWCTL_FORCE_SHELL=1`：强制禁用 TUI，直接 Shell 菜单。
+- `OPENCLAWCTL_STRICT_NONINTERACTIVE=1`：严格非交互模式（要求同时传 `--wizard` + `--config-file`，并输出 `STRICT_REPORT_PATH`）。
 
 ## 测试
 
@@ -124,6 +129,8 @@ bash ./tests/openclawctl_test.sh
   - `2026.2.6 -> 2026.2.26` 升级通过
 
 说明：`2026.2.5` 在官方 tags 中不存在，因此低版本升级验证使用最接近可用版本 `2026.2.6`。
+
+补充：在 **2026-03-03** 的真机回归中，已验证官方短 tag `260205/260226` 不存在时会报清晰错误，并可使用可用 tag 列表进行回退升级。
 
 ## 开发说明
 

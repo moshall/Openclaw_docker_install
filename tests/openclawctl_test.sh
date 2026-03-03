@@ -105,6 +105,7 @@ wizard_upgrade_cfg_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --c
 assert_contains "${wizard_upgrade_cfg_output}" "目标镜像: docker.io/1panel/openclaw:beta"
 assert_contains "${wizard_upgrade_cfg_output}" "容器名: openclaw_up_cfg"
 assert_contains "${wizard_upgrade_cfg_output}" "docker pull docker.io/1panel/openclaw:beta"
+assert_contains "${wizard_upgrade_cfg_output}" "APT 源文件格式校验"
 assert_contains "${wizard_upgrade_cfg_output}" "openclaw doctor --fix"
 assert_contains "${wizard_upgrade_cfg_output}" "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true"
 assert_contains "${wizard_upgrade_cfg_output}" "-p 6000:6000/udp"
@@ -336,5 +337,42 @@ custom_data_root="${tmpdir}/custom-data-root"
 install_custom_root_input=$'1\n1\n2\n1\n2\nopenclaw_custom_root\nc\ny\n0\n'
 install_custom_root_output=$(printf "%s" "${install_custom_root_input}" | OPENCLAWCTL_DATA_ROOT="${custom_data_root}" bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_custom_root_output}" "持久化目录: ${custom_data_root}/openclaw_custom_root"
+
+# 15) strict non-interactive mode should require wizard + config-file
+set +e
+strict_missing_flags_output=$(printf '0\n' | OPENCLAWCTL_STRICT_NONINTERACTIVE=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+strict_missing_flags_status=$?
+set -e
+if [[ "${strict_missing_flags_status}" -eq 0 ]]; then
+  fail "expected strict non-interactive mode without wizard/config to fail"
+fi
+assert_contains "${strict_missing_flags_output}" "STRICT_NONINTERACTIVE 模式要求同时提供 --wizard 与 --config-file"
+
+# 16) strict non-interactive install should emit deterministic strict report path
+strict_install_output=$(OPENCLAWCTL_STRICT_NONINTERACTIVE=1 bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_cfg}")
+assert_contains "${strict_install_output}" "STRICT_REPORT_PATH="
+assert_contains "${strict_install_output}" "/runtime/strict-report.json"
+
+# 17) official custom tag should fallback to nearest available tag before pull
+tag_fallback_cfg="${tmpdir}/tag-fallback.cfg"
+cat > "${tag_fallback_cfg}" <<'EOF'
+SOURCE_CHOICE=1
+CHANNEL_CHOICE=3
+OFFICIAL_TAG=260226
+NAME=openclaw_tag_fallback
+DATA_DIR=/opt/1panel/apps/openclaw_tag_fallback
+HOST_PORT=4113
+CONTAINER_PORT=18789
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+DEPS_INSTALL_CHOICE=2
+EOF
+tag_fallback_output=$(OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${tag_fallback_cfg}" 2>&1)
+assert_contains "${tag_fallback_output}" "官方标签 260226 不存在"
+assert_contains "${tag_fallback_output}" "docker pull docker.io/1panel/openclaw:2026.2.26"
+assert_not_contains "${tag_fallback_output}" "docker pull docker.io/1panel/openclaw:260226"
 
 echo "[PASS] interactive openclawctl tests"
