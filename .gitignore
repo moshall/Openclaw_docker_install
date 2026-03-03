@@ -32,3 +32,10 @@ progress.md
 
 # Misc
 *.orig
+
+# Go build/cache artifacts
+.bin/
+.gocache/
+.gomodcache/
+**/.gocache/
+**/.gomodcache/

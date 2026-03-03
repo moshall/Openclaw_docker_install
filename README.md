@@ -1,314 +1,136 @@
-# OpenClaw Docker 交互式部署助手（中文）
+# OpenClaw Docker 部署助手
 
-一个面向 OpenClaw 的交互式 Shell 工具，用于在 Docker 环境中快速完成：
-- 新装
-- 安全升级（保留持久化数据）
-- 卸载（保留或清理持久化数据）
-- 管理 EasyClaw 工具
-- 容器环境依赖检测/安装（默认 `npm` + `uv`，`go` 可选）
-- 小白级“按步骤跟随”操作
+一个面向 OpenClaw 的部署与运维工具，采用 `Shell 执行引擎 + Go TUI 前端` 架构，支持：
 
-本项目核心目标：
-- 减少重复输入冗长命令
-- 降低误操作风险（提供预览与确认）
-- 统一部署流程，便于长期维护
-
-## 功能特性
-
-- 交互式菜单（按用户目标分组）
-  - `1) 🚀 安装新实例`
-  - `2) 🔄 升级已有实例`
-  - `3) 🛠️ 调整或重建实例`
-  - `4) 📦 管理 EasyClaw 工具`
-  - `5) 🔧 检查或补齐运行环境`
-  - `6) 🗑️ 卸载实例`
-- 新装可配置项
-  - 新装页面采用“单屏总表 + 选组后顺序提问”：
-    - 主界面始终只保留一张总表
-    - 输入编号后，在当前流程里连续填写该组字段
-    - 修改完成后立即回到同一张总表，便于整体确认
-  - 总表按 6 个分组展示，用户更容易理解：
-    - `1) 📦 版本镜像选择`
-    - `2) 🐳 容器名`
-    - `3) 💾 持久化目录管理`
-    - `4) 🌐 网络设置`
-    - `5) 🧩 功能加强`
-    - `6) 🔐 鉴权方式管理`
-  - `💾 持久化目录管理`
-    - 主数据目录
-    - `bin` 持久化（默认开启）
-    - `env` 持久化（默认关闭，可按需开启）
-    - 扩展持久化（APT 源/Key、缓存）
-  - `🌐 网络设置`
-    - 主端口映射
-    - 补充端口映射（支持一次配置多个 `-p`，如 `5001:5001,6000:6000/udp`）
-    - 网络绑定（`local` / `lan`）
-  - `🧩 功能加强`
-    - 可选安装 `EasyClaw`
-      - 仓库：`https://github.com/moshall/easyclaw`
-      - 宿主机目录：`<持久化目录>/software/easyclaw`
-      - 容器内目录：`/root/.openclaw/software/easyclaw`
-      - 默认自动补充 Web UI 端口：`4231:4231`
-      - 安装完成后会自动注册命令到 `/usr/local/bin/easyclaw`
-    - 可选自动补齐容器内常见依赖（默认 `npm` + `uv`，`go` 可选）
-  - `🔐 鉴权方式管理`
-    - Token 自动生成或手动填写
-  - 失败降级：依赖/EasyClaw 属于可选步骤，失败不会阻断主应用安装，仍会回显 Token/访问 URL
-- 预检查（Preflight）
-  - 执行前自动检查 Docker 可用性、宿主系统信息、目录可写性、镜像仓库目标
-  - 若发现旧安装痕迹，会提示“兼容迁移识别”
-- 依赖检测/安装
-  - 自动识别容器内包管理器：`apt` / `apk` / `dnf` / `yum`
-  - 自动识别容器架构：`x86_64` / `aarch64`（安装 Go 时选择对应安装方式）
-  - 自动修正 `uv` / `go` 的 PATH（安装/升级后固定执行，不依赖“依赖补齐”选项）
-  - 当选择 `uv` 但容器缺失 Python 时，会自动补齐 `python3/pip`
-  - 已内置 Debian/Ubuntu 兼容模式：若遇到 PEP668（`externally-managed-environment`），会自动回退安装策略
-  - 自动将 `/root/.local/bin`、`/root/go/bin` 中可执行文件软链到 `/usr/local/bin`，避免 OpenClaw 找不到命令
-  - 依赖清单会写入持久化目录（`runtime/deps.profile`），升级后自动沿用并补齐
-  - 按选项挂载并持久化
-    - `bin`：`/root/.local/bin`、`/root/go/bin`
-    - 环境：`/usr/local/go`、`/usr/local/lib/node_modules`、`/root/.local/lib`、`/root/.local/share/uv`、`/root/.local/pipx`、`/root/.local/share/pipx`
-    - 授权与配置（随 `env` 一并持久化）：`/root/.config`、`/root/.ssh`、`/root/.gitconfig`、`/root/.docker`、`/root/.aws`、`/root/.kube`、`/root/.netrc`、`/root/.npmrc`、`/root/.pypirc`
-  - 支持两种模式：仅检测、检测并安装缺失项
-  - 检测结果区分三态：`FOUND` / `FOUND_BUT_NOT_IN_PATH` / `MISSING`
-  - 可在安装流程自动执行，也可菜单独立执行
-- 安全升级
-  - 以“分组清单”形式展示所有关键参数，更接近用户理解
-  - 输入容器名后会先展示“升级前环境检测”摘要（依赖检测、runtime目录、挂载状态、风险建议）
-  - 自动检测当前容器已发布端口：主端口自动识别，其余端口自动填入“扩展端口映射”
-  - 在最终执行前会再次检查容器运行状态；若仍在运行，会提示“将中断当前任务”并二次确认
-  - 自动识别“非本脚本历史安装”场景并尝试读取容器内已安装依赖，作为默认依赖清单
-  - 升级前检测容器运行状态（运行中会提示“将中断任务”并要求确认）
-  - 若本次开启了 `bin/env/aptcfg/cache` 持久化，会在删除旧容器前先尝试迁移对应 runtime 目录，降低首次开启持久化时的重装成本
-  - 若检测到“已持久化且路径一致”，会自动跳过迁移（提速）；若检测到路径变化，会执行迁移并提示路径变更信息
-  - 若开启 `env` 持久化，会在升级前自动快照 apt 手工安装包清单，升级后自动回放安装（适用于 Debian/Ubuntu apt 体系）
-  - APT 回放前会先执行 `apt-get update` 预检，失败会给出明确提示
-  - APT 回放改为“仅安装缺失包”，并输出恢复报告（`runtime/apt-restore.report`）
-  - 复用原持久化目录
-  - 支持在升级时同步调整“扩展端口映射”，与升级一次完成，避免升级后再为端口单独重建
-  - 重建容器后自动做基础检查（`ps/logs/version`）
-  - 可选检查并升级 `EasyClaw`（若未安装会自动创建并安装）
-  - 失败降级：可选步骤失败不阻断升级主流程，结尾会给出失败摘要
-  - 可继承并调整“bin/环境持久化”与依赖选择（配置保存于 `runtime/` 下）
-- 安全重建容器
-  - 面向“端口调整/挂载调整/参数调整后需要重建容器”的场景
-  - 进入后会先执行“升级前环境检测”摘要
-  - 会自动识别“容器内有数据但尚未持久化”的项，并默认开启对应持久化策略
-  - 重建前先迁移数据，重建后再执行 PATH 修复、权限修复、可选依赖补齐
-- 卸载模式
-  - 安全卸载：仅删除容器
-  - 完整卸载：删除容器 + 删除持久化目录（二次确认）
-- Dry Run 预演
-  - `--dry-run` 只打印命令，不执行
-- 运行报告
-  - 每次执行后写入 `runtime/last_report.json`（结构化结果）
-  - 同步追加 `runtime/diagnostics.log`（排障日志）
-
-## 镜像映射规则
-
-- 中文稳定：`ghcr.io/1186258278/openclaw-zh:latest`
-- 中文最新版：`ghcr.io/1186258278/openclaw-zh:nightly`
-- 官方稳定：`docker.io/openclaw/openclaw:latest`
-- 官方最新版：`docker.io/openclaw/openclaw:beta`
-
-## 环境要求
-
-- Linux 服务器（推荐）
-- Docker 已安装并可用
-- Bash 可用（脚本使用了 `bash` 语法）
-- 可选：`git`（用于安装/升级 `EasyClaw`）
-
-## 适配声明（发布前必读）
-
-- 本脚本目前仅在 **1Panel 面板环境** 下完成实装与验证。
-- 其他面板或纯 Docker 管理环境（如宝塔、青龙、Portainer、自建脚本环境）**尚未完成完整验证**。
-- 若你在非 1Panel 环境使用遇到问题，请反馈完整报错信息，建议至少包含：
-  - 执行命令
-  - 报错原文（不要只截图结论）
-  - `docker version`
-  - `cat /etc/os-release`
-- 使用的菜单路径（如 `1) 🚀 安装新实例 -> 5) 🧩 功能加强 -> 3) 依赖清单 -> c`）
-- 追求稳定性时，**推荐优先在 1Panel 中使用本脚本**。
-
-## 快速开始
-
-### 1) 获取脚本
-
-将本仓库克隆到服务器后，进入目录：
-
-```bash
-cd /你的路径/openclaw\ docker/Openclaw_docker_install
-```
-
-### 2) 运行（重要）
-
-请使用 `bash` 运行，不要用 `sh`：
-
-```bash
-bash ./openclawctl.sh
-```
-
-预演模式：
-
-```bash
-bash ./openclawctl.sh --dry-run
-```
-
-### 3) 按菜单完成操作
-
-脚本会逐步询问参数并在关键步骤提供确认。
-
-## 小白跟随操作（建议先看）
-
-下面按“第一次安装”给出最简流程，直接照着做即可。
-
-1. 进入脚本目录并启动：
-
-```bash
-cd /你的路径/openclaw\ docker/Openclaw_docker_install
-bash ./openclawctl.sh
-```
-
-2. 进入主菜单后输入 `1`，进入 `🚀 安装新实例`。
-3. 在单屏总表中优先处理这 4 组：
-  - `1) 📦 版本镜像选择`
-  - `2) 🐳 容器名`
-  - `3) 💾 持久化目录管理`
-  - `4) 🌐 网络设置`
-4. 可选项按需设置：
-  - `3) 💾 持久化目录管理`：新手建议 `bin=是`、`env=否`
-  - `5) 🧩 功能加强`：默认保留 EasyClaw 和 `npm+uv`
-  - `6) 🔐 鉴权方式管理`：默认自动生成 Token
-5. 输入 `c` 查看“执行清单（确认前）”，确认后输入 `y` 执行。
-6. 安装结束后记录脚本回显的：
-  - `TOKEN=...`
-  - `URL=http://<server-ip>:端口/?token=...`
-7. 浏览器打开该 URL 即可访问。
-
-## 零基础跟随安装（一步一回车版）
-
-如果你是第一次接触 Docker/OpenClaw，可以直接按下面做：
-
-1. 执行 `bash ./openclawctl.sh`，主菜单输入 `1` 进入新装。
-2. 分组里优先处理 4 个关键项：
-  - `1) 📦 版本镜像选择`：按需选“官方/中文版 + 稳定/最新版”。
-  - `2) 🐳 容器名`：建议 `ddy_claw` 这种英文名。
-  - `3) 💾 持久化目录管理`：不确定就直接回车用默认值。
-  - `4) 🌐 网络设置`：主端口不冲突就直接回车用默认值。
-3. 其余建议新手先用默认：
-  - `3) 💾 持久化目录管理`：`bin=是`，`env=否`。
-  - `5) 🧩 功能加强`：EasyClaw=是，依赖补齐=是，依赖清单保留 `npm+uv`。
-  - `6) 🔐 鉴权方式管理`：Token 自动生成。
-4. 输入 `c` 查看执行清单，再输入 `y` 执行。
-5. 结束后复制脚本回显的 `URL` 与 `TOKEN` 打开即可使用。
-
-提示：
-- 看到 `[...] [回车使用默认值]` 时，直接按回车就是推荐配置。
-- 卸载流程里“持久化目录”那一行，如果不改目录，直接回车即可。
-
-## 常见使用场景
-
-### 场景 A：首次部署（中文版稳定）
-
-1. 选择 `1) 🚀 安装新实例`
-2. 在总表中优先编辑 `1) 📦 版本镜像选择`、`2) 🐳 容器名`、`3) 💾 持久化目录管理`
-3. 未填写项会显示 `未选择`，可随时回改
-4. 配置完成后输入 `c` 进入最终确认并执行
-
-### 场景 B：升级 OpenClaw 且保留数据
-
-1. 选择 `2) 🔄 升级已有实例`
-2. 输入容器名
-3. 若检测到容器运行中，确认是否继续（继续会中断当前任务）
-4. 在单屏总表中按需调整 `目标版本`、`数据保存`、`网络访问`、`功能加强`
-5. 输入 `c` 进入确认并执行
-
-### 场景 E：一次性配置额外端口（避免后续单独重建）
-
-1. 新装或升级流程中，编辑 `扩展端口映射`
-2. 输入格式：`宿主机端口:容器端口`，多个用逗号分隔
-3. 支持协议后缀：`/udp`（如 `6000:6000/udp`）
-4. 示例：`5001:5001,6000:6000/udp`
-
-### 场景 C：只升级 EasyClaw，不动 OpenClaw 容器
-
-1. 选择 `4) 📦 管理 EasyClaw 工具`
-2. 输入容器名/目录
-3. 确认执行
-
-### 场景 D：只做容器依赖补齐（默认 npm+uv，go 可选）
-
-1. 选择 `5) 🔧 检查或补齐运行环境`
-2. 输入容器名
-3. 选择“仅检测”或“检测并安装缺失项”
-4. 确认执行
-
-### 场景 F：需要新增端口或调整挂载，做“安全重建”
-
-1. 选择 `3) 🛠️ 调整或重建实例`
-2. 输入容器名，先查看自动检测结果
-3. 在单屏总表里按需调整镜像、数据保存、网络访问、功能加强
-4. 输入 `c` 确认执行；脚本会先迁移再重建，降低数据丢失风险
+- 新装实例
+- 升级实例（低版本 -> 高版本）
+- 安全重建（端口/挂载调整）
+- 卸载（安全卸载 / 完整卸载）
+- EasyClaw 管理
+- 容器依赖检测与补齐（默认 `npm uv`，可选 `go`）
 
 ## 目录结构
 
 ```text
 .
-├── Openclaw_docker_install/
-│   ├── openclawctl.sh            # 主脚本（交互式菜单）
-│   └── README.md                 # 当前文件
-└── tests/
-    └── openclawctl_test.sh       # 交互流程测试
+├── openclawctl.sh              # 主脚本（真实执行入口）
+├── cmd/
+│   └── openclawctl/            # Go TUI（交互前端）
+├── internal/
+│   └── app/                    # TUI 公共模型/菜单配置
+├── tests/
+│   └── openclawctl_test.sh     # Shell 交互回归测试
+├── docs/
+│   └── plans/                  # 设计文档
+├── go.mod
+├── go.sum
+└── README.md
 ```
 
-## 注意事项
+## 运行方式
 
-- `sh openclawctl.sh` 报错 `Illegal option -o pipefail`：
-  - 原因：`sh` 不支持该语法
-  - 解决：改用 `bash openclawctl.sh`
-- 出现多个 `openclaw.json.bak*`：
-  - 属于配置写入时的备份行为，通常是正常现象
-- 删除持久化目录是不可逆操作：
-  - 完整卸载前请确认数据已备份
-- 若开启 `env` 持久化：
-  - 会保留常见登录态/授权配置（如 gh、ssh、docker、aws、kube 等）
-  - 这些目录可能包含敏感凭据，请确保宿主机目录权限、备份策略、传输链路均符合你的安全要求
-- 若使用 `pip install --user` 安装 Python 包：
-  - 其 `site-packages` 常在 `/root/.local/lib/python*/site-packages`
-  - 当前版本已将 `/root/.local/lib` 纳入“环境持久化”范围
-- 若使用 `npm -g` 安装包：
-  - 常见目录为 `/usr/local/lib/node_modules`
-  - 当前版本已将该目录纳入“环境持久化”范围
-- 系统包管理器安装内容（`apt/apk/dnf/yum`）：
-  - 对 `apt`（Debian/Ubuntu）已支持“手工包清单快照 + 升级后自动回放安装”
-  - `apk/dnf/yum` 当前仍属于容器系统层，升级后建议通过“依赖补齐”或手动命令重新安装
+```bash
+bash ./openclawctl.sh
+```
 
-## 为什么建议开启持久化
+说明：
 
-- 开启 `bin` 持久化后：
-  - 升级后已安装命令更不容易“丢失路径”（如 `uv`、`obsidian-cli`）
-- 同时开启环境持久化后：
-  - 升级后已安装运行环境可复用，减少重复安装
-  - 对 `go`、`uv`、`npm -g`、`pip --user` 场景更友好
-  - 常见 CLI 授权状态（如 gh/ssh/docker/aws/kube）更容易在升级后保留
-- 对 OpenClaw 使用的直接收益：
-  - 升级时更不容易丢失已安装技能/插件所依赖的运行时命令
+- 交互式终端（TTY）中，默认优先启动 Go TUI。
+- 非 TTY（管道、计划任务、脚本）自动回退到 Shell 菜单。
+- 如需强制使用 Shell：
+
+```bash
+OPENCLAWCTL_FORCE_SHELL=1 bash ./openclawctl.sh
+```
+
+- 预演模式（仅打印命令，不执行）：
+
+```bash
+bash ./openclawctl.sh --dry-run
+```
+
+## 镜像策略
+
+中文版镜像：
+
+- 稳定版：`ghcr.io/1186258278/openclaw-zh:latest`
+- 最新版：`ghcr.io/1186258278/openclaw-zh:nightly`
+
+官方镜像（默认）：
+
+- 稳定版：`docker.io/1panel/openclaw:latest`
+- 最新版：`docker.io/1panel/openclaw:beta`
+
+补充：
+
+- 官方源支持自动拉取 tag 并手动选择具体版本（例如 `2026.2.26`）。
+- 可通过 `OPENCLAW_OFFICIAL_REPO` 覆盖官方仓库（例如 `alpine/openclaw`）。
+- 为保证 `.openclaw` 路径一致，脚本统一以 `--user root` 执行 OpenClaw 配置与容器启动。
+
+## 持久化目录策略
+
+默认目录按环境自动判断：
+
+1. 若设置 `OPENCLAWCTL_DATA_ROOT`，优先使用该目录。
+2. 检测到 1Panel 环境时：`/opt/1panel/apps/<容器名>`
+3. 非 1Panel 环境：
+   - Linux：`/opt/openclaw/apps/<容器名>`
+   - macOS：`$HOME/.openclaw/apps/<容器名>`
+
+## 关键安全机制
+
+- Preflight 检查：Docker 可用性、目录可写、镜像仓库、端口信息。
+- 目录错挂载保护：
+  - 升级/重建时若检测“当前挂载目录”与“本次目录”不一致，默认中止。
+  - 可显式放行：`OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1`
+- 升级前兼容修复：`openclaw doctor --fix`
+- `lan` 绑定下自动尝试写入 Control UI 兼容项（不支持的旧键会自动跳过，不阻断主流程）。
+
+## Docker 与环境补齐
+
+- Docker 缺失时：
+  - Linux 可自动安装（`OPENCLAWCTL_AUTO_INSTALL_DOCKER=1` 可无交互）
+  - macOS 提供 Docker Desktop 引导
+- 依赖补齐：支持 apt/apk/dnf/yum 生态，支持 `npm uv go` 组合。
+- runtime 持久化支持：bin/env/apt 配置/cache 分层选择。
+
+## 常用环境变量
+
+- `OPENCLAWCTL_DATA_ROOT`：自定义持久化根目录。
+- `OPENCLAW_OFFICIAL_REPO`：覆盖官方镜像仓库。
+- `OPENCLAWCTL_AUTO_INSTALL_DOCKER=1`：自动安装 Docker（Linux/macOS）。
+- `OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1`：放行目录不一致升级。
+- `OPENCLAWCTL_ALLOWED_ORIGINS`：Control UI 显式 allowed origins。
+- `OPENCLAWCTL_TRUSTED_PROXIES`：网关 trusted proxies。
+- `OPENCLAWCTL_FORCE_SHELL=1`：强制禁用 TUI，直接 Shell 菜单。
 
 ## 测试
 
-运行测试：
+在仓库根目录执行：
 
 ```bash
-bash ../tests/openclawctl_test.sh
+bash -n ./openclawctl.sh
+go test ./...
+bash ./tests/openclawctl_test.sh
 ```
 
-## 许可证
+## 已验证场景
 
-当前仓库未单独声明 License。
-如需开源发布，建议补充 `LICENSE` 文件（如 MIT/Apache-2.0）。
+以下链路已在真实机器验证（**2026-03-02**，Ubuntu 22.04）：
 
-## 致谢
+- 纯 Linux 路径：`/opt/openclaw/apps`
+  - `2026.2.6 -> 2026.2.26` 升级通过
+- 1Panel 路径：`/opt/1panel/apps`
+  - `2026.2.6 -> 2026.2.26` 升级通过
 
-- OpenClaw 官方项目：<https://github.com/openclaw/openclaw>
-- OpenClaw 中文版项目：<https://github.com/1186258278/OpenClawChineseTranslation>
-- EasyClaw：<https://github.com/moshall/easyclaw>
+说明：`2026.2.5` 在官方 tags 中不存在，因此低版本升级验证使用最接近可用版本 `2026.2.6`。
+
+## 开发说明
+
+手工构建 TUI：
+
+```bash
+GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" GOTOOLCHAIN=auto go build -o ./.bin/openclawctl ./cmd/openclawctl
+```
+
+运行后脚本会自动优先发现并启动 `./.bin/openclawctl`。

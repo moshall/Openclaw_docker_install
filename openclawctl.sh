@@ -12,6 +12,10 @@ DEFAULT_ENABLE_BIN_PERSIST="1"
 DEFAULT_ENABLE_ENV_PERSIST="2"
 DEFAULT_ENABLE_APT_CONFIG_PERSIST="2"
 DEFAULT_ENABLE_CACHE_PERSIST="2"
+OFFICIAL_OPENCLAW_REPO_DEFAULT="1panel/openclaw"
+OPENCLAWCTL_TUI_BIN="${OPENCLAWCTL_TUI_BIN:-}"
+SELECTED_WIZARD=""
+CONFIG_FILE=""
 
 print_cmd() {
   local rendered=()
@@ -78,6 +82,58 @@ join_with_semicolon() {
     fi
   done
   printf '%s\n' "${out}"
+}
+
+host_platform() {
+  local os
+  os=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+  case "${os}" in
+    linux*) echo "linux" ;;
+    darwin*) echo "darwin" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+is_1panel_environment() {
+  [[ -d "/opt/1panel/apps" || -x "/usr/local/bin/1panel" || -d "/usr/local/1panel" ]]
+}
+
+default_data_root() {
+  if [[ -n "${OPENCLAWCTL_DATA_ROOT:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_DATA_ROOT}"
+    return
+  fi
+
+  if is_1panel_environment; then
+    echo "/opt/1panel/apps"
+    return
+  fi
+
+  case "$(host_platform)" in
+    darwin) echo "${HOME}/.openclaw/apps" ;;
+    linux) echo "/opt/openclaw/apps" ;;
+    *) echo "/opt/1panel/apps" ;;
+  esac
+}
+
+default_data_dir_for_name() {
+  local name="$1"
+  printf '%s/%s\n' "$(default_data_root)" "${name}"
+}
+
+official_openclaw_repo_path() {
+  local repo="${OPENCLAW_OFFICIAL_REPO:-${OFFICIAL_OPENCLAW_REPO_DEFAULT}}"
+  repo="${repo#docker.io/}"
+  repo="${repo#/}"
+  if [[ "${repo}" != */* ]]; then
+    repo="${OFFICIAL_OPENCLAW_REPO_DEFAULT}"
+  fi
+  printf '%s\n' "${repo}"
+}
+
+official_openclaw_image() {
+  local tag="$1"
+  printf 'docker.io/%s:%s\n' "$(official_openclaw_repo_path)" "${tag}"
 }
 
 append_diagnostics_log() {
@@ -182,7 +238,7 @@ read_container_name() {
 
 is_safe_path_text() {
   local value="$1"
-  [[ "${value}" =~ ^[A-Za-z0-9_./-]+$ ]]
+  [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]]
 }
 
 read_choice_default() {
@@ -214,6 +270,92 @@ clear_interactive_screen() {
   fi
 }
 
+stdin_is_tty() {
+  if [[ "${OPENCLAWCTL_ASSUME_TTY:-0}" == "1" ]]; then
+    return 0
+  fi
+  [[ -t 0 ]]
+}
+
+stdout_is_tty() {
+  if [[ "${OPENCLAWCTL_ASSUME_TTY:-0}" == "1" ]]; then
+    return 0
+  fi
+  [[ -t 1 ]]
+}
+
+is_interactive_session() {
+  stdin_is_tty && stdout_is_tty
+}
+
+resolve_tui_binary() {
+  if [[ -n "${OPENCLAWCTL_TUI_BIN}" && -x "${OPENCLAWCTL_TUI_BIN}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TUI_BIN}"
+    return 0
+  fi
+  local root_dir
+  root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  local candidate
+  for candidate in \
+    "${root_dir}/.bin/openclawctl" \
+    "${root_dir}/bin/openclawctl" \
+    "${root_dir}/openclawctl"; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  if built_tui_bin=$(build_tui_binary_if_possible "${root_dir}"); then
+    printf '%s\n' "${built_tui_bin}"
+    return 0
+  fi
+  return 1
+}
+
+build_tui_binary_if_possible() {
+  local root_dir="$1"
+  local source_file="${root_dir}/cmd/openclawctl/main.go"
+  local output_bin="${root_dir}/.bin/openclawctl"
+  local go_mod="${root_dir}/go.mod"
+  local go_sum="${root_dir}/go.sum"
+
+  [[ -f "${source_file}" && -f "${go_mod}" ]] || return 1
+  command -v go >/dev/null 2>&1 || return 1
+
+  if [[ -x "${output_bin}" && "${output_bin}" -nt "${source_file}" && "${output_bin}" -nt "${go_mod}" && ( ! -f "${go_sum}" || "${output_bin}" -nt "${go_sum}" ) ]]; then
+    printf '%s\n' "${output_bin}"
+    return 0
+  fi
+
+  if [[ "${OPENCLAWCTL_DISABLE_TUI_BUILD:-0}" == "1" ]]; then
+    return 1
+  fi
+
+  mkdir -p "${root_dir}/.bin" "${root_dir}/.gocache" "${root_dir}/.gomodcache"
+  if GOCACHE="${root_dir}/.gocache" GOMODCACHE="${root_dir}/.gomodcache" GOTOOLCHAIN=auto go build -o "${output_bin}" "${root_dir}/cmd/openclawctl" >/dev/null 2>&1; then
+    printf '%s\n' "${output_bin}"
+    return 0
+  fi
+  return 1
+}
+
+maybe_exec_tui() {
+  if [[ "${OPENCLAWCTL_FORCE_SHELL:-0}" == "1" || "${OPENCLAWCTL_TUI_ACTIVE:-0}" == "1" ]]; then
+    return 1
+  fi
+  if ! is_interactive_session; then
+    return 1
+  fi
+
+  local tui_bin
+  if ! tui_bin=$(resolve_tui_binary); then
+    return 1
+  fi
+
+  OPENCLAWCTL_TUI_ACTIVE=1 exec "${tui_bin}" --shell-script "$0" "$@"
+}
+
 press_enter_to_continue() {
   printf '按回车返回: ' >&2
   local dummy
@@ -224,6 +366,13 @@ sanitize_user_input() {
   local raw="${1:-}"
   # Remove control chars (e.g. ESC sequences from arrow keys) to avoid menu corruption.
   printf '%s' "${raw}" | awk '{gsub(/[[:cntrl:]]/, ""); printf "%s", $0}'
+}
+
+trim_surrounding_spaces() {
+  local raw="${1:-}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  printf '%s\n' "${raw}"
 }
 
 sanitize_port_mapping_input() {
@@ -253,17 +402,88 @@ dep_choice_label() {
   fi
 }
 
+fetch_official_openclaw_tags() {
+  if [[ -n "${OPENCLAWCTL_TEST_OFFICIAL_TAGS:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TEST_OFFICIAL_TAGS}" | tr ',' '\n' | awk 'NF {print $0}'
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local repo_path
+  repo_path=$(official_openclaw_repo_path)
+  local api="https://hub.docker.com/v2/repositories/${repo_path}/tags?page_size=100"
+  local raw
+  raw=$(curl -fsSL "${api}" 2>/dev/null || true)
+  if [[ -z "${raw}" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${raw}" | grep -Eo '"name":"[^"]+"' | sed -E 's/"name":"([^"]+)"/\1/' | awk '!seen[$0]++'
+}
+
+prompt_official_openclaw_tag() {
+  local current_tag="${1:-latest}"
+  local -a tags=()
+  local tag
+  while IFS= read -r tag; do
+    [[ -z "${tag}" ]] && continue
+    tags+=("${tag}")
+    [[ "${#tags[@]}" -ge 20 ]] && break
+  done < <(fetch_official_openclaw_tags || true)
+
+  if [[ "${#tags[@]}" -eq 0 ]]; then
+    printf '[INFO] 未能自动拉取官方标签，已回退到手动输入\n' >&2
+    read_with_default "请输入官方镜像标签（例如 latest、beta、2026.2.26）" "${current_tag}"
+    return
+  fi
+
+  echo "官方 openclaw 可选标签（最近）:" >&2
+  local i
+  for i in "${!tags[@]}"; do
+    printf '  %d) %s\n' "$((i + 1))" "${tags[$i]}" >&2
+  done
+  echo "  m) 手动输入标签" >&2
+
+  local choice
+  choice=$(read_choice_default "请选择标签" "1")
+  if [[ "${choice}" == "m" || "${choice}" == "M" ]]; then
+    read_with_default "请输入官方镜像标签（例如 latest、beta、2026.2.26）" "${current_tag}"
+    return
+  fi
+
+  if [[ "${choice}" =~ ^[0-9]+$ ]] && ((choice >= 1)) && ((choice <= ${#tags[@]})); then
+    printf '%s\n' "${tags[$((choice - 1))]}"
+    return
+  fi
+
+  log_error "无效选择，已使用默认标签 ${current_tag}"
+  printf '%s\n' "${current_tag}"
+}
+
 resolve_image() {
   local source_choice="$1"
   local channel_choice="$2"
+  local explicit_tag="${3:-}"
 
   if [[ "${source_choice}" == "1" && "${channel_choice}" == "1" ]]; then
-    printf '%s\n' "docker.io/openclaw/openclaw:latest"
+    official_openclaw_image "latest"
     return
   fi
 
   if [[ "${source_choice}" == "1" && "${channel_choice}" == "2" ]]; then
-    printf '%s\n' "docker.io/openclaw/openclaw:beta"
+    official_openclaw_image "beta"
+    return
+  fi
+
+  if [[ "${source_choice}" == "1" && "${channel_choice}" == "3" ]]; then
+    if [[ -z "${explicit_tag}" ]]; then
+      log_error "官方指定版本缺少标签"
+      return 1
+    fi
+    official_openclaw_image "${explicit_tag}"
     return
   fi
 
@@ -303,12 +523,69 @@ bootstrap_openclaw_config() {
   local gateway_bind="$4"
   local token="$5"
 
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw setup
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.mode local
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.port "${container_port}"
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.bind "${gateway_bind}"
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.mode token
-  run_cmd docker run --rm -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.token "${token}"
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw setup
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.mode local
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.port "${container_port}"
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.bind "${gateway_bind}"
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.mode token
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.token "${token}"
+}
+
+run_openclaw_doctor_fix() {
+  local image="$1"
+  local data_dir="$2"
+  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw doctor --fix
+}
+
+run_openclaw_config_set_compat() {
+  local image="$1"
+  local data_dir="$2"
+  local key="$3"
+  local value="$4"
+
+  print_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 0
+  fi
+
+  local output rc
+  set +e
+  output=$(docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}" 2>&1)
+  rc=$?
+  set -e
+
+  if [[ "${rc}" -eq 0 ]]; then
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    return 0
+  fi
+
+  if [[ "${output}" == *"Unrecognized key"* || "${output}" == *"unknown key"* || "${output}" == *"Unknown key"* ]]; then
+    log_info "当前镜像版本不支持配置键 ${key}，已自动跳过"
+    return 0
+  fi
+
+  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+  return "${rc}"
+}
+
+ensure_gateway_controlui_compat() {
+  local image="$1"
+  local data_dir="$2"
+  local gateway_bind="$3"
+
+  if [[ "${gateway_bind}" == "local" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${OPENCLAWCTL_ALLOWED_ORIGINS:-}" ]]; then
+    run_openclaw_config_set_compat "${image}" "${data_dir}" "gateway.controlUi.allowedOrigins" "${OPENCLAWCTL_ALLOWED_ORIGINS}"
+  else
+    run_openclaw_config_set_compat "${image}" "${data_dir}" "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback" "true"
+  fi
+
+  if [[ -n "${OPENCLAWCTL_TRUSTED_PROXIES:-}" ]]; then
+    run_openclaw_config_set_compat "${image}" "${data_dir}" "gateway.trustedProxies" "${OPENCLAWCTL_TRUSTED_PROXIES}"
+  fi
 }
 
 run_gateway_container() {
@@ -386,6 +663,7 @@ run_gateway_container() {
 
   run_cmd docker run -d \
     --name "${name}" \
+    --user root \
     --restart "${DEFAULT_RESTART_POLICY}" \
     "${port_args[@]}" \
     -v "${data_dir}:/root/.openclaw" \
@@ -1737,21 +2015,70 @@ detect_existing_data_dir() {
   local name="$1"
   local fallback="$2"
 
+  if [[ -n "${OPENCLAWCTL_TEST_EXISTING_DATA_DIR:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TEST_EXISTING_DATA_DIR}"
+    return
+  fi
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     printf '%s\n' "${fallback}"
     return
   fi
 
-  local detected
-  detected=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/root/.openclaw"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null || true)
-  if [[ -n "${detected}" ]] && is_safe_path_text "${detected}"; then
-    printf '%s\n' "${detected}"
-  else
-    if [[ -n "${detected}" ]]; then
-      log_info "检测到持久化目录包含异常字符，已回退到默认目录"
+  local mounts_output=""
+  mounts_output=$(docker inspect -f '{{range .Mounts}}{{println .Source "|" .Destination}}{{end}}' "${name}" 2>/dev/null || true)
+
+  local source destination
+  while IFS='|' read -r source destination; do
+    source=$(sanitize_user_input "${source}")
+    destination=$(sanitize_user_input "${destination}")
+    source=$(trim_surrounding_spaces "${source}")
+    destination=$(trim_surrounding_spaces "${destination}")
+    [[ -z "${source}" || -z "${destination}" ]] && continue
+    if [[ "${destination}" == "/root/.openclaw" ]]; then
+      if is_safe_path_text "${source}"; then
+        printf '%s\n' "${source}"
+        return
+      fi
+      log_info "检测到 /root/.openclaw 挂载路径包含异常字符，继续尝试其他候选目录"
     fi
+  done <<< "${mounts_output}"
+
+  while IFS='|' read -r source destination; do
+    source=$(sanitize_user_input "${source}")
+    destination=$(sanitize_user_input "${destination}")
+    source=$(trim_surrounding_spaces "${source}")
+    destination=$(trim_surrounding_spaces "${destination}")
+    [[ -z "${source}" || -z "${destination}" ]] && continue
+    if [[ "${destination}" == *".openclaw"* || "${destination}" == "/data" || "${destination}" == "/config" ]]; then
+      if is_safe_path_text "${source}"; then
+        printf '%s\n' "${source}"
+        return
+      fi
+    fi
+  done <<< "${mounts_output}"
+
+  while IFS='|' read -r source destination; do
+    source=$(sanitize_user_input "${source}")
+    destination=$(sanitize_user_input "${destination}")
+    source=$(trim_surrounding_spaces "${source}")
+    destination=$(trim_surrounding_spaces "${destination}")
+    [[ -z "${source}" || -z "${destination}" ]] && continue
+    [[ "${destination}" == "/root/.local/bin" || "${destination}" == "/root/go/bin" ]] && continue
+    if [[ -f "${source}/openclaw.json" || -d "${source}/backups" ]]; then
+      if is_safe_path_text "${source}"; then
+        printf '%s\n' "${source}"
+        return
+      fi
+    fi
+  done <<< "${mounts_output}"
+
+  if [[ -n "${fallback}" ]]; then
     printf '%s\n' "${fallback}"
+    return
   fi
+
+  printf '%s\n' "$(default_data_dir_for_name "${name}")"
 }
 
 detect_existing_image() {
@@ -2137,6 +2464,51 @@ print_upgrade_discovery_summary() {
   fi
 }
 
+install_docker_if_missing() {
+  local platform
+  platform=$(host_platform)
+
+  if [[ "${platform}" == "linux" ]]; then
+    local install_choice="${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-}"
+    if [[ -z "${install_choice}" && is_interactive_session ]]; then
+      printf '检测到未安装 Docker，是否自动安装 Docker Engine? (y/N): '
+      IFS= read -r install_choice
+    fi
+    if [[ "${install_choice}" != "1" ]] && ! validate_yes_no "${install_choice:-n}"; then
+      log_error "Docker 未安装。可设置 OPENCLAWCTL_AUTO_INSTALL_DOCKER=1 自动安装，或手工执行: curl -fsSL https://get.docker.com | sh"
+      return 1
+    fi
+
+    run_cmd sh -lc 'curl -fsSL https://get.docker.com | sh'
+    if command -v systemctl >/dev/null 2>&1; then
+      run_cmd systemctl enable --now docker || true
+    elif command -v service >/dev/null 2>&1; then
+      run_cmd service docker start || true
+    fi
+    return 0
+  fi
+
+  if [[ "${platform}" == "darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      local install_choice_mac="${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-}"
+      if [[ -z "${install_choice_mac}" && is_interactive_session ]]; then
+        printf '检测到未安装 Docker，是否通过 Homebrew 安装 Docker Desktop? (y/N): '
+        IFS= read -r install_choice_mac
+      fi
+      if [[ "${install_choice_mac}" == "1" ]] || validate_yes_no "${install_choice_mac:-n}"; then
+        run_cmd brew install --cask docker
+        log_info "安装完成后请手动启动 Docker Desktop: open -a Docker"
+        return 0
+      fi
+    fi
+    log_error "macOS 环境请先安装并启动 Docker Desktop 后重试。"
+    return 1
+  fi
+
+  log_error "当前系统暂不支持自动安装 Docker，请手工安装后重试。"
+  return 1
+}
+
 run_preflight_checks() {
   local action="$1"
   local container_name="$2"
@@ -2153,7 +2525,15 @@ run_preflight_checks() {
   fi
 
   if ! command -v docker >/dev/null 2>&1; then
-    log_error "[preflight] docker 命令不可用"
+    log_info "[preflight] docker 命令不可用，尝试自动安装/引导"
+    if ! install_docker_if_missing; then
+      log_error "[preflight] docker 命令不可用"
+      return 1
+    fi
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "[preflight] docker 安装后仍不可用"
     return 1
   fi
 
@@ -2191,8 +2571,17 @@ run_preflight_checks() {
   if [[ -n "${container_name}" && -n "${data_dir}" && "${DRY_RUN}" -eq 0 ]] && container_exists "${container_name}"; then
     local existing_data
     existing_data=$(detect_existing_data_dir "${container_name}" "")
-    if [[ -n "${existing_data}" && "${existing_data}" != "${data_dir}" ]]; then
-      log_info "[preflight] 注意: 当前容器数据目录为 ${existing_data}，与本次选择不同"
+    existing_data=$(trim_surrounding_spaces "${existing_data}")
+    local expected_data
+    expected_data=$(trim_surrounding_spaces "${data_dir}")
+    if [[ -n "${existing_data}" && "${existing_data}" != "${expected_data}" ]]; then
+      if [[ "${OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH:-0}" == "1" ]]; then
+        log_info "[preflight] 注意: 当前容器数据目录为 ${existing_data}，与本次选择不同（已按 OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1 放行）"
+      else
+        log_error "[preflight] 当前容器数据目录为 ${existing_data}，与本次选择 ${expected_data} 不一致。为避免错挂载导致升级失败，已终止。"
+        log_info "[preflight] 如确认要迁移新目录，请设置 OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1 后重试。"
+        return 1
+      fi
     fi
     if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
       log_info "[preflight] 检测到可能是旧安装（无 persistence.profile），将启用兼容迁移识别"
@@ -2286,6 +2675,7 @@ channel_choice_label() {
   case "${channel_choice}" in
     1) echo "稳定版" ;;
     2) echo "最新版" ;;
+    3) echo "指定版本" ;;
     *) echo "未选择" ;;
   esac
 }
@@ -2301,10 +2691,12 @@ display_port_mappings() {
 
 install_default_data_dir_desc() {
   local name="${1:-}"
+  local root
+  root=$(default_data_root)
   if [[ -n "${name}" ]]; then
-    echo "/opt/1panel/apps/${name}"
+    echo "${root}/${name}"
   else
-    echo "/opt/1panel/apps/<容器名>"
+    echo "${root}/<容器名>"
   fi
 }
 
@@ -2312,7 +2704,12 @@ install_version_group_summary() {
   local image="$1"
   local source_choice="${2:-}"
   local channel_choice="${3:-}"
+  local official_tag="${4:-}"
   if [[ -n "${source_choice}" || -n "${channel_choice}" ]]; then
+    if [[ "${source_choice}" == "1" && "${channel_choice}" == "3" && -n "${official_tag}" ]]; then
+      echo "$(source_choice_label "${source_choice}") · $(channel_choice_label "${channel_choice}")(${official_tag})"
+      return
+    fi
     echo "$(source_choice_label "${source_choice}") · $(channel_choice_label "${channel_choice}")"
     return
   fi
@@ -2659,9 +3056,621 @@ print_human_summary() {
   echo "==============================="
 }
 
+execute_install_plan() {
+  local image="$1"
+  local name="$2"
+  local data_dir="$3"
+  local host_port="$4"
+  local container_port="$5"
+  local gateway_bind="$6"
+  local token="$7"
+  local bin_persist_choice="$8"
+  local env_persist_choice="$9"
+  local apt_cfg_persist_choice="${10}"
+  local cache_persist_choice="${11}"
+  local easy_choice="${12}"
+  local deps_install_choice="${13}"
+  local target_deps="${14}"
+  local extra_ports="${15:-}"
+
+  if ! run_preflight_checks "install" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return 1
+  fi
+
+  run_cmd mkdir -p "${data_dir}"
+  run_cmd docker pull "${image}"
+  remove_container_if_exists "${name}"
+  bootstrap_openclaw_config "${image}" "${data_dir}" "${container_port}" "${gateway_bind}" "${token}"
+  local -a install_nonfatal_issues=()
+  if ! run_optional_step "配置兼容修复(doctor --fix)" run_openclaw_doctor_fix "${image}" "${data_dir}"; then
+    install_nonfatal_issues+=("配置兼容修复失败")
+  fi
+  if ! run_optional_step "Control UI 兼容配置" ensure_gateway_controlui_compat "${image}" "${data_dir}" "${gateway_bind}"; then
+    install_nonfatal_issues+=("Control UI 兼容配置失败")
+  fi
+  if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+      log_error "APT 源目录初始化失败，已中止安装以避免空源配置"
+      return 1
+    fi
+  fi
+  run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+    install_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+  fi
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+      install_nonfatal_issues+=("授权目录权限修正失败")
+    fi
+  fi
+  if [[ "${easy_choice}" == "1" ]]; then
+    if ! run_optional_step "EasyClaw 安装/升级" install_easyclaw "${name}" "${data_dir}"; then
+      install_nonfatal_issues+=("EasyClaw 安装/升级失败")
+    fi
+  fi
+  if [[ "${deps_install_choice}" == "1" ]]; then
+    if run_optional_step "依赖补齐" manage_container_runtime_deps "${name}" "install" "${target_deps}"; then
+      run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${target_deps}" || true
+    else
+      install_nonfatal_issues+=("容器依赖补齐失败")
+    fi
+  fi
+
+  printf 'TOKEN=%s\n' "${token}"
+  printf 'URL=http://<server-ip>:%s/?token=%s\n' "${host_port}" "${token}"
+  local install_version install_status_text install_runtime_paths install_deps_installed
+  install_version=$(detect_openclaw_version "${name}")
+  install_status_text=$(get_container_status_text "${name}")
+  install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  install_deps_installed=$(detect_installed_deps_summary "${name}" "${target_deps}")
+
+  local install_status="success"
+  if [[ "${#install_nonfatal_issues[@]}" -gt 0 ]]; then
+    install_status="success_with_warnings"
+    log_error "以下可选步骤失败（主应用已可用）:"
+    local issue
+    for issue in "${install_nonfatal_issues[@]}"; do
+      log_error " - ${issue}"
+    done
+    log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
+  fi
+  write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
+  print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
+}
+
+execute_upgrade_plan() {
+  local name="$1"
+  local image="$2"
+  local data_dir="$3"
+  local host_port="$4"
+  local container_port="$5"
+  local bin_persist_choice="$6"
+  local env_persist_choice="$7"
+  local apt_cfg_persist_choice="$8"
+  local cache_persist_choice="$9"
+  local easyclaw_upgrade="${10}"
+  local deps_repair_choice="${11}"
+  local upgrade_dep_set="${12}"
+  local extra_ports="${13:-}"
+
+  if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
+    return 1
+  fi
+  if should_enable_easyclaw_web_port "${easyclaw_upgrade}" "${name}" "${data_dir}"; then
+    extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+
+  if ! run_preflight_checks "upgrade" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return 1
+  fi
+
+  run_cmd mkdir -p "${data_dir}"
+  run_cmd docker pull "${image}"
+
+  local -a upgrade_nonfatal_issues=()
+  local current_gateway_bind
+  current_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+
+  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
+    log_error "升级前 runtime 数据迁移失败；为避免数据丢失，已中止本次升级"
+    return 1
+  fi
+
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
+      upgrade_nonfatal_issues+=("APT 手工包清单快照失败")
+    fi
+  fi
+
+  remove_container_if_exists "${name}"
+  if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+      log_error "APT 源目录初始化失败，已中止升级以避免空源配置"
+      return 1
+    fi
+  fi
+  if ! run_optional_step "配置兼容修复(doctor --fix)" run_openclaw_doctor_fix "${image}" "${data_dir}"; then
+    upgrade_nonfatal_issues+=("配置兼容修复失败")
+  fi
+  if ! run_optional_step "Control UI 兼容配置" ensure_gateway_controlui_compat "${image}" "${data_dir}" "${current_gateway_bind}"; then
+    upgrade_nonfatal_issues+=("Control UI 兼容配置失败")
+  fi
+  run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+    upgrade_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+  fi
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+      upgrade_nonfatal_issues+=("授权目录权限修正失败")
+    fi
+  fi
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
+      upgrade_nonfatal_issues+=("APT 手工包回放安装失败")
+    fi
+  fi
+
+  run_cmd docker ps --filter "name=${name}"
+  run_cmd docker logs --tail 30 "${name}"
+  run_cmd docker exec "${name}" openclaw --version
+
+  if [[ "${easyclaw_upgrade}" == "1" ]]; then
+    if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+      upgrade_nonfatal_issues+=("EasyClaw 检查升级失败")
+    fi
+  fi
+  if [[ "${deps_repair_choice}" == "1" ]]; then
+    if run_optional_step "升级后依赖补齐" manage_container_runtime_deps "${name}" "install" "${upgrade_dep_set}"; then
+      run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${upgrade_dep_set}" || true
+    else
+      upgrade_nonfatal_issues+=("升级后依赖补齐失败")
+    fi
+  fi
+
+  if [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]]; then
+    log_error "以下可选步骤失败（升级主流程已完成）:"
+    local issue
+    for issue in "${upgrade_nonfatal_issues[@]}"; do
+      log_error " - ${issue}"
+    done
+    log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
+  fi
+  local upgrade_status="success"
+  [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]] && upgrade_status="success_with_warnings"
+  write_last_report "upgrade" "${upgrade_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${upgrade_nonfatal_issues[@]}"
+
+  local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
+  upgrade_version=$(detect_openclaw_version "${name}")
+  upgrade_status_text=$(get_container_status_text "${name}")
+  upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
+  upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+  upgrade_token=$(detect_token_from_config "${data_dir}")
+  print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}" "${extra_ports}"
+}
+
+execute_rebuild_plan() {
+  local name="$1"
+  local image="$2"
+  local data_dir="$3"
+  local host_port="$4"
+  local container_port="$5"
+  local bin_persist_choice="$6"
+  local env_persist_choice="$7"
+  local apt_cfg_persist_choice="$8"
+  local cache_persist_choice="$9"
+  local deps_repair_choice="${10}"
+  local rebuild_dep_set="${11}"
+  local extra_ports="${12:-}"
+
+  if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
+    return 1
+  fi
+  extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+
+  if ! run_preflight_checks "rebuild" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return 1
+  fi
+
+  run_cmd mkdir -p "${data_dir}"
+  run_cmd docker pull "${image}"
+
+  local -a rebuild_nonfatal_issues=()
+  local current_gateway_bind
+  current_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
+    log_error "重建前 runtime 数据迁移失败；为避免数据丢失，已中止本次重建"
+    return 1
+  fi
+
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
+      rebuild_nonfatal_issues+=("APT 手工包清单快照失败")
+    fi
+  fi
+
+  remove_container_if_exists "${name}"
+  if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
+      log_error "APT 源目录初始化失败，已中止重建以避免空源配置"
+      return 1
+    fi
+  fi
+  if ! run_optional_step "配置兼容修复(doctor --fix)" run_openclaw_doctor_fix "${image}" "${data_dir}"; then
+    rebuild_nonfatal_issues+=("配置兼容修复失败")
+  fi
+  if ! run_optional_step "Control UI 兼容配置" ensure_gateway_controlui_compat "${image}" "${data_dir}" "${current_gateway_bind}"; then
+    rebuild_nonfatal_issues+=("Control UI 兼容配置失败")
+  fi
+
+  run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+
+  if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
+    rebuild_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
+  fi
+  if [[ "${env_persist_choice}" == "1" ]]; then
+    if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
+      rebuild_nonfatal_issues+=("授权目录权限修正失败")
+    fi
+    if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
+      rebuild_nonfatal_issues+=("APT 手工包回放安装失败")
+    fi
+  fi
+
+  if [[ "${deps_repair_choice}" == "1" ]]; then
+    if run_optional_step "重建后依赖补齐" manage_container_runtime_deps "${name}" "install" "${rebuild_dep_set}"; then
+      run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${rebuild_dep_set}" || true
+    else
+      rebuild_nonfatal_issues+=("重建后依赖补齐失败")
+    fi
+  fi
+
+  run_cmd docker ps --filter "name=${name}"
+  run_cmd docker logs --tail 30 "${name}"
+  run_cmd docker exec "${name}" openclaw --version
+
+  if [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]]; then
+    log_error "以下可选步骤失败（重建主流程已完成）:"
+    local issue
+    for issue in "${rebuild_nonfatal_issues[@]}"; do
+      log_error " - ${issue}"
+    done
+    log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
+  fi
+
+  local rebuild_status="success"
+  [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]] && rebuild_status="success_with_warnings"
+  write_last_report "rebuild" "${rebuild_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${rebuild_nonfatal_issues[@]}"
+
+  local rebuild_version rebuild_status_text rebuild_runtime_paths rebuild_deps_installed rebuild_gateway_bind rebuild_token
+  rebuild_version=$(detect_openclaw_version "${name}")
+  rebuild_status_text=$(get_container_status_text "${name}")
+  rebuild_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  rebuild_deps_installed=$(detect_installed_deps_summary "${name}" "${rebuild_dep_set}")
+  rebuild_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
+  rebuild_token=$(detect_token_from_config "${data_dir}")
+  print_human_summary "rebuild" "${name}" "${rebuild_version}" "${rebuild_status_text}" "${data_dir}" "${rebuild_runtime_paths}" "${rebuild_deps_installed}" "${rebuild_gateway_bind}" "${rebuild_token}" "${host_port}" "${extra_ports}"
+}
+
+load_simple_config_file() {
+  local file_path="$1"
+  [[ -f "${file_path}" ]] || {
+    log_error "配置文件不存在: ${file_path}"
+    return 1
+  }
+  while IFS='=' read -r raw_key raw_value; do
+    [[ -z "${raw_key}" ]] && continue
+    [[ "${raw_key}" =~ ^# ]] && continue
+    local key value
+    key=$(sanitize_user_input "${raw_key}")
+    value="${raw_value}"
+    case "${key}" in
+      SOURCE_CHOICE) SOURCE_CHOICE_CFG="${value}" ;;
+      CHANNEL_CHOICE) CHANNEL_CHOICE_CFG="${value}" ;;
+      IMAGE) IMAGE_CFG="${value}" ;;
+      HOST_PORT) HOST_PORT_CFG="${value}" ;;
+      CONTAINER_PORT) CONTAINER_PORT_CFG="${value}" ;;
+      NAME) NAME_CFG="${value}" ;;
+      DATA_DIR) DATA_DIR_CFG="${value}" ;;
+      MODE) MODE_CFG="${value}" ;;
+      BIND_CHOICE) BIND_CHOICE_CFG="${value}" ;;
+      BIN_PERSIST_CHOICE) BIN_PERSIST_CHOICE_CFG="${value}" ;;
+      ENV_PERSIST_CHOICE) ENV_PERSIST_CHOICE_CFG="${value}" ;;
+      APT_CFG_PERSIST_CHOICE) APT_CFG_PERSIST_CHOICE_CFG="${value}" ;;
+      CACHE_PERSIST_CHOICE) CACHE_PERSIST_CHOICE_CFG="${value}" ;;
+      EASY_CHOICE) EASY_CHOICE_CFG="${value}" ;;
+      TOKEN_MODE) TOKEN_MODE_CFG="${value}" ;;
+      TOKEN_MANUAL) TOKEN_MANUAL_CFG="${value}" ;;
+      OFFICIAL_TAG) OFFICIAL_TAG_CFG="${value}" ;;
+      DEPS_INSTALL_CHOICE) DEPS_INSTALL_CHOICE_CFG="${value}" ;;
+      TARGET_DEPS) TARGET_DEPS_CFG="${value}" ;;
+      EXTRA_PORTS) EXTRA_PORTS_CFG="${value}" ;;
+    esac
+  done < "${file_path}"
+}
+
+run_install_from_config_file() {
+  SOURCE_CHOICE_CFG=""
+  CHANNEL_CHOICE_CFG=""
+  IMAGE_CFG=""
+  HOST_PORT_CFG="${DEFAULT_HOST_PORT}"
+  CONTAINER_PORT_CFG="${DEFAULT_CONTAINER_PORT}"
+  NAME_CFG=""
+  DATA_DIR_CFG=""
+  BIND_CHOICE_CFG="2"
+  BIN_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_BIN_PERSIST}"
+  ENV_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_ENV_PERSIST}"
+  APT_CFG_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_APT_CONFIG_PERSIST}"
+  CACHE_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_CACHE_PERSIST}"
+  EASY_CHOICE_CFG="1"
+  TOKEN_MODE_CFG="1"
+  TOKEN_MANUAL_CFG=""
+  OFFICIAL_TAG_CFG=""
+  DEPS_INSTALL_CHOICE_CFG="1"
+  TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
+  EXTRA_PORTS_CFG=""
+
+  load_simple_config_file "${CONFIG_FILE}"
+
+  local image="${IMAGE_CFG}"
+  if [[ -z "${image}" && -n "${SOURCE_CHOICE_CFG}" && -n "${CHANNEL_CHOICE_CFG}" ]]; then
+    image=$(resolve_image "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}") || image=""
+  fi
+  [[ -n "${image}" ]] || {
+    log_error "配置文件缺少有效镜像"
+    return 1
+  }
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local token
+  if [[ "${TOKEN_MODE_CFG}" == "2" ]]; then
+    token="${TOKEN_MANUAL_CFG}"
+  else
+    token=$(generate_token)
+  fi
+  [[ -n "${token}" ]] || {
+    log_error "配置文件缺少 token"
+    return 1
+  }
+
+  local extra_ports="${EXTRA_PORTS_CFG}"
+  if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}"); then
+    return 1
+  fi
+  if should_enable_easyclaw_web_port "${EASY_CHOICE_CFG}" "" "${data_dir}"; then
+    extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${extra_ports}")
+  fi
+  local gateway_bind
+  gateway_bind=$(bind_choice_label "${BIND_CHOICE_CFG}")
+
+  printf '\n--- 执行清单（确认前） ---\n'
+  echo "镜像: ${image}"
+  echo "容器名: ${NAME_CFG}"
+  echo "端口映射: ${HOST_PORT_CFG}:${CONTAINER_PORT_CFG}"
+  echo "持久化目录: ${data_dir}"
+  echo "网络绑定: ${gateway_bind}"
+  echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
+  echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
+  echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "EasyClaw: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
+  echo "依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
+  if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
+    echo "依赖清单: ${TARGET_DEPS_CFG}"
+  fi
+  echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+
+  execute_install_plan "${image}" "${NAME_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${gateway_bind}" "${token}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${extra_ports}"
+}
+
+run_upgrade_from_config_file() {
+  SOURCE_CHOICE_CFG=""
+  CHANNEL_CHOICE_CFG=""
+  IMAGE_CFG=""
+  HOST_PORT_CFG="${DEFAULT_HOST_PORT}"
+  CONTAINER_PORT_CFG="${DEFAULT_CONTAINER_PORT}"
+  NAME_CFG=""
+  DATA_DIR_CFG=""
+  BIN_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_BIN_PERSIST}"
+  ENV_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_ENV_PERSIST}"
+  APT_CFG_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_APT_CONFIG_PERSIST}"
+  CACHE_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_CACHE_PERSIST}"
+  EASY_CHOICE_CFG="1"
+  OFFICIAL_TAG_CFG=""
+  DEPS_INSTALL_CHOICE_CFG="1"
+  TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
+  EXTRA_PORTS_CFG=""
+
+  load_simple_config_file "${CONFIG_FILE}"
+
+  local image="${IMAGE_CFG}"
+  if [[ -z "${image}" && -n "${SOURCE_CHOICE_CFG}" && -n "${CHANNEL_CHOICE_CFG}" ]]; then
+    image=$(resolve_image "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}") || image=""
+  fi
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+  [[ -n "${image}" ]] || {
+    log_error "配置文件缺少有效镜像"
+    return 1
+  }
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  printf '\n--- 执行清单（确认前） ---\n'
+  echo "容器名: ${NAME_CFG}"
+  echo "目标镜像: ${image}"
+  echo "端口映射: ${HOST_PORT_CFG}:${CONTAINER_PORT_CFG}"
+  echo "持久化目录(保留): ${data_dir}"
+  echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
+  echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
+  echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "EasyClaw 检查升级: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
+  echo "升级后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
+  if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
+    echo "依赖清单: ${TARGET_DEPS_CFG}"
+  fi
+  echo "扩展端口映射: $(value_or_unset "${EXTRA_PORTS_CFG}")"
+
+  execute_upgrade_plan "${NAME_CFG}" "${image}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${EXTRA_PORTS_CFG}"
+}
+
+run_rebuild_from_config_file() {
+  IMAGE_CFG=""
+  HOST_PORT_CFG="${DEFAULT_HOST_PORT}"
+  CONTAINER_PORT_CFG="${DEFAULT_CONTAINER_PORT}"
+  NAME_CFG=""
+  DATA_DIR_CFG=""
+  BIN_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_BIN_PERSIST}"
+  ENV_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_ENV_PERSIST}"
+  APT_CFG_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_APT_CONFIG_PERSIST}"
+  CACHE_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_CACHE_PERSIST}"
+  DEPS_INSTALL_CHOICE_CFG="1"
+  TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
+  EXTRA_PORTS_CFG=""
+
+  load_simple_config_file "${CONFIG_FILE}"
+
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+  [[ -n "${IMAGE_CFG}" ]] || {
+    log_error "配置文件缺少目标镜像"
+    return 1
+  }
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  printf '\n--- 执行清单（确认前） ---\n'
+  echo "容器名: ${NAME_CFG}"
+  echo "目标镜像: ${IMAGE_CFG}"
+  echo "端口映射: ${HOST_PORT_CFG}:${CONTAINER_PORT_CFG}"
+  echo "持久化目录(保留): ${data_dir}"
+  echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
+  echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
+  echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "重建后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
+  if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
+    echo "依赖清单: ${TARGET_DEPS_CFG}"
+  fi
+  echo "扩展端口映射: $(value_or_unset "${EXTRA_PORTS_CFG}")"
+
+  execute_rebuild_plan "${NAME_CFG}" "${IMAGE_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${EXTRA_PORTS_CFG}"
+}
+
+execute_easyclaw_upgrade_plan() {
+  local name="$1"
+  local data_dir="$2"
+
+  if ! run_preflight_checks "easyclaw-upgrade" "${name}" "${data_dir}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return 1
+  fi
+
+  local -a easy_nonfatal_issues=()
+  if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+    easy_nonfatal_issues+=("EasyClaw 检查升级失败")
+  fi
+  local easy_status="success"
+  [[ "${#easy_nonfatal_issues[@]}" -gt 0 ]] && easy_status="success_with_warnings"
+  write_last_report "easyclaw-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
+}
+
+run_uninstall_from_config_file() {
+  NAME_CFG=""
+  MODE_CFG="1"
+  DATA_DIR_CFG=""
+  load_simple_config_file "${CONFIG_FILE}"
+
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  remove_container_if_exists "${NAME_CFG}"
+  if [[ "${MODE_CFG}" == "2" ]]; then
+    run_cmd rm -rf "${data_dir}"
+  fi
+}
+
+run_easyclaw_from_config_file() {
+  NAME_CFG=""
+  DATA_DIR_CFG=""
+  load_simple_config_file "${CONFIG_FILE}"
+
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  printf '\n--- 当前操作：升级或重装 EasyClaw ---\n'
+  echo "容器名: ${NAME_CFG}"
+  echo "EasyClaw 目录: $(easyclaw_target_dir "${data_dir}")"
+  execute_easyclaw_upgrade_plan "${NAME_CFG}" "${data_dir}"
+}
+
+run_deps_from_config_file() {
+  NAME_CFG=""
+  DATA_DIR_CFG=""
+  MODE_CFG="install"
+  TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
+  load_simple_config_file "${CONFIG_FILE}"
+
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local mode="${MODE_CFG}"
+  local dep_set="${TARGET_DEPS_CFG}"
+
+  if ! run_preflight_checks "deps-manage" "${NAME_CFG}" "${data_dir}"; then
+    log_error "preflight 未通过，请修复后重试"
+    return 1
+  fi
+
+  local -a deps_nonfatal_issues=()
+  if ! run_optional_step "依赖检测流程" manage_container_runtime_deps "${NAME_CFG}" "${mode}" "${dep_set}"; then
+    deps_nonfatal_issues+=("依赖检测流程失败")
+  fi
+  if [[ "${mode}" == "install" ]]; then
+    if ! run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${dep_set}"; then
+      deps_nonfatal_issues+=("依赖档案保存失败")
+    fi
+  fi
+
+  local deps_status="success"
+  if [[ "${#deps_nonfatal_issues[@]}" -gt 0 ]]; then
+    deps_status="success_with_warnings"
+    log_error "以下步骤存在告警:"
+    local issue
+    for issue in "${deps_nonfatal_issues[@]}"; do
+      log_error " - ${issue}"
+    done
+  fi
+  write_last_report "deps-manage" "${deps_status}" "${NAME_CFG}" "${data_dir}" "" "" "" "" "" "${deps_nonfatal_issues[@]}"
+}
+
 install_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_install_from_config_file
+    return
+  fi
   local source_choice=""
   local channel_choice=""
+  local official_tag=""
   local image=""
   local host_port="${DEFAULT_HOST_PORT}"
   local container_port="${DEFAULT_CONTAINER_PORT}"
@@ -2684,7 +3693,7 @@ install_wizard() {
     printf '\n=== 🚀 安装新实例 ===\n'
     echo "按编号编辑，修改后会回到这张总表；c 确认执行，q 返回主菜单"
     echo
-    echo "1) 📦 版本镜像选择: $(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
+    echo "1) 📦 版本镜像选择: $(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}" "${official_tag}")"
     echo "2) 🐳 容器名: $(value_or_unset "${name}")"
     echo "3) 💾 持久化目录管理: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "$(install_default_data_dir_desc "${name}")")"
     echo "4) 🌐 网络设置: $(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
@@ -2702,18 +3711,31 @@ install_wizard() {
         echo "  2) 中文版"
         source_choice=$(read_choice_default "请选择" "${source_choice:-2}")
         echo "版本通道:"
-        echo "  1) 稳定版"
-        echo "  2) 最新版"
-        channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
-        image=$(resolve_image "${source_choice}" "${channel_choice}") || image=""
-        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
+        if [[ "${source_choice}" == "1" ]]; then
+          echo "  1) 稳定版(latest)"
+          echo "  2) 最新版(beta)"
+          echo "  3) 指定版本标签（自动拉取）"
+          channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
+          if [[ "${channel_choice}" == "3" ]]; then
+            official_tag=$(prompt_official_openclaw_tag "${official_tag:-latest}")
+          else
+            official_tag=""
+          fi
+        else
+          echo "  1) 稳定版"
+          echo "  2) 最新版"
+          channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
+          official_tag=""
+        fi
+        image=$(resolve_image "${source_choice}" "${channel_choice}" "${official_tag}") || image=""
+        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}" "${official_tag}")"
         ;;
       2)
         name=$(read_container_name "Docker 容器名")
         log_info "已更新：容器名=${name}"
         ;;
       3)
-        data_dir=$(read_with_default "持久化目录" "${data_dir:-/opt/1panel/apps/${name:-openclaw}}")
+        data_dir=$(read_with_default "持久化目录" "${data_dir:-$(default_data_dir_for_name "${name:-openclaw}")}")
         echo "是否启用 内容持久化（bin）:"
         echo "  1) 是"
         echo "  2) 否"
@@ -2785,7 +3807,7 @@ install_wizard() {
           continue
         fi
         if [[ -z "${data_dir}" ]]; then
-          data_dir="/opt/1panel/apps/${name}"
+          data_dir=$(default_data_dir_for_name "${name}")
         fi
         if [[ "${token_mode}" == "2" && -z "${token_manual}" ]]; then
           log_error "Token 为手动模式，请先在“鉴权方式管理”中填写 token"
@@ -2830,67 +3852,7 @@ install_wizard() {
           continue
         fi
 
-        if ! run_preflight_checks "install" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
-          log_error "preflight 未通过，请修复后重试"
-          continue
-        fi
-
-        run_cmd mkdir -p "${data_dir}"
-        run_cmd docker pull "${image}"
-        remove_container_if_exists "${name}"
-        bootstrap_openclaw_config "${image}" "${data_dir}" "${container_port}" "${gateway_bind}" "${token}"
-        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
-            log_error "APT 源目录初始化失败，已中止安装以避免空源配置"
-            continue
-          fi
-        fi
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-        local -a install_nonfatal_issues=()
-        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
-          install_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
-        fi
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
-            install_nonfatal_issues+=("授权目录权限修正失败")
-          fi
-        fi
-
-        if [[ "${easy_choice}" == "1" ]]; then
-          if ! run_optional_step "EasyClaw 安装/升级" install_easyclaw "${name}" "${data_dir}"; then
-            install_nonfatal_issues+=("EasyClaw 安装/升级失败")
-          fi
-        fi
-
-        if [[ "${deps_install_choice}" == "1" ]]; then
-          if run_optional_step "依赖补齐" manage_container_runtime_deps "${name}" "install" "${target_deps}"; then
-            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${target_deps}" || true
-          else
-            install_nonfatal_issues+=("容器依赖补齐失败")
-          fi
-        fi
-
-        printf 'TOKEN=%s\n' "${token}"
-        printf 'URL=http://<server-ip>:%s/?token=%s\n' "${host_port}" "${token}"
-        local install_version install_status_text install_runtime_paths install_deps_installed
-        install_version=$(detect_openclaw_version "${name}")
-        install_status_text=$(get_container_status_text "${name}")
-        install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
-        install_deps_installed=$(detect_installed_deps_summary "${name}" "${target_deps}")
-
-        local install_status="success"
-        if [[ "${#install_nonfatal_issues[@]}" -gt 0 ]]; then
-          install_status="success_with_warnings"
-          log_error "以下可选步骤失败（主应用已可用）:"
-          local issue
-          for issue in "${install_nonfatal_issues[@]}"; do
-            log_error " - ${issue}"
-          done
-          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
-        fi
-        write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
-        print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
+        execute_install_plan "${image}" "${name}" "${data_dir}" "${host_port}" "${container_port}" "${gateway_bind}" "${token}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easy_choice}" "${deps_install_choice}" "${target_deps}" "${extra_ports}" || continue
         return
         ;;
       q|Q)
@@ -2905,12 +3867,17 @@ install_wizard() {
 }
 
 upgrade_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_upgrade_from_config_file
+    return
+  fi
   printf '\n=== 🔄 升级已有实例 ===\n'
   echo "按编号编辑，修改后会回到这张总表；升级会尽量保留原有数据、挂载和运行环境"
   local name
   name=$(read_container_name "请输入要升级的容器名")
 
-  local default_data_dir="/opt/1panel/apps/${name}"
+  local default_data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
   local detected_data_dir
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
@@ -2921,6 +3888,7 @@ upgrade_wizard() {
 
   local source_choice=""
   local channel_choice=""
+  local official_tag=""
   local image=""
 
   local host_port
@@ -2987,7 +3955,7 @@ upgrade_wizard() {
   while true; do
     clear_interactive_screen
     printf '\n=== 🔄 升级已有实例：%s ===\n' "${name}"
-    echo "1) 📦 目标版本: $(value_or_unset "${image}")"
+    echo "1) 📦 目标版本: $(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}" "${official_tag}")"
     echo "2) 💾 数据保存: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
     echo "3) 🌐 网络访问: $(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
     echo "4) 🧩 功能加强: $(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}")"
@@ -3004,11 +3972,24 @@ upgrade_wizard() {
         echo "  2) 中文版"
         source_choice=$(read_choice_default "请选择" "${source_choice:-2}")
         echo "目标版本通道:"
-        echo "  1) 稳定版"
-        echo "  2) 最新版"
-        channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
-        image=$(resolve_image "${source_choice}" "${channel_choice}") || image=""
-        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}")"
+        if [[ "${source_choice}" == "1" ]]; then
+          echo "  1) 稳定版(latest)"
+          echo "  2) 最新版(beta)"
+          echo "  3) 指定版本标签（自动拉取）"
+          channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
+          if [[ "${channel_choice}" == "3" ]]; then
+            official_tag=$(prompt_official_openclaw_tag "${official_tag:-latest}")
+          else
+            official_tag=""
+          fi
+        else
+          echo "  1) 稳定版"
+          echo "  2) 最新版"
+          channel_choice=$(read_choice_default "请选择" "${channel_choice:-1}")
+          official_tag=""
+        fi
+        image=$(resolve_image "${source_choice}" "${channel_choice}" "${official_tag}") || image=""
+        log_info "已更新：$(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}" "${official_tag}")"
         ;;
       2)
         data_dir=$(read_with_default "持久化目录（安全升级会复用）" "${data_dir}")
@@ -3110,89 +4091,7 @@ upgrade_wizard() {
           continue
         fi
 
-        if ! run_preflight_checks "upgrade" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
-          log_error "preflight 未通过，请修复后重试"
-          continue
-        fi
-
-        run_cmd mkdir -p "${data_dir}"
-        run_cmd docker pull "${image}"
-
-        local -a upgrade_nonfatal_issues=()
-
-        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
-          log_error "升级前 runtime 数据迁移失败；为避免数据丢失，已中止本次升级"
-          continue
-        fi
-
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
-            upgrade_nonfatal_issues+=("APT 手工包清单快照失败")
-          fi
-        fi
-
-        remove_container_if_exists "${name}"
-        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
-            log_error "APT 源目录初始化失败，已中止升级以避免空源配置"
-            continue
-          fi
-        fi
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
-          upgrade_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
-        fi
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
-            upgrade_nonfatal_issues+=("授权目录权限修正失败")
-          fi
-        fi
-
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
-            upgrade_nonfatal_issues+=("APT 手工包回放安装失败")
-          fi
-        fi
-
-        run_cmd docker ps --filter "name=${name}"
-        run_cmd docker logs --tail 30 "${name}"
-        run_cmd docker exec "${name}" openclaw --version
-
-        if [[ "${easyclaw_upgrade}" == "1" ]]; then
-          if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
-            upgrade_nonfatal_issues+=("EasyClaw 检查升级失败")
-          fi
-        fi
-
-        if [[ "${deps_repair_choice}" == "1" ]]; then
-          if run_optional_step "升级后依赖补齐" manage_container_runtime_deps "${name}" "install" "${upgrade_dep_set}"; then
-            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${upgrade_dep_set}" || true
-          else
-            upgrade_nonfatal_issues+=("升级后依赖补齐失败")
-          fi
-        fi
-
-        if [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]]; then
-          log_error "以下可选步骤失败（升级主流程已完成）:"
-          local issue
-          for issue in "${upgrade_nonfatal_issues[@]}"; do
-            log_error " - ${issue}"
-          done
-          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
-        fi
-        local upgrade_status="success"
-        [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]] && upgrade_status="success_with_warnings"
-        write_last_report "upgrade" "${upgrade_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${upgrade_nonfatal_issues[@]}"
-
-        local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
-        upgrade_version=$(detect_openclaw_version "${name}")
-        upgrade_status_text=$(get_container_status_text "${name}")
-        upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
-        upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
-        upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
-        upgrade_token=$(detect_token_from_config "${data_dir}")
-        print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}" "${extra_ports}"
+        execute_upgrade_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}" "${extra_ports}" || continue
         return
         ;;
       q|Q)
@@ -3207,12 +4106,17 @@ upgrade_wizard() {
 }
 
 safe_rebuild_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_rebuild_from_config_file
+    return
+  fi
   printf '\n=== 🛠️ 调整或重建实例 ===\n'
   echo "适用于新增端口、补持久化、调整挂载后需要安全重建容器的场景"
   local name
   name=$(read_container_name "请输入要重建的容器名")
 
-  local default_data_dir="/opt/1panel/apps/${name}"
+  local default_data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
   local detected_data_dir
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
@@ -3222,7 +4126,7 @@ safe_rebuild_wizard() {
   local detected_container_port="${port_pair##*,}"
 
   local image
-  image=$(detect_existing_image "${name}" "docker.io/openclaw/openclaw:latest")
+  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")")
 
   local host_port="${detected_host_port}"
   local container_port="${detected_container_port}"
@@ -3372,11 +4276,6 @@ safe_rebuild_wizard() {
         press_enter_to_continue
         ;;
       c|C)
-        if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
-          continue
-        fi
-        extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
-
         printf '\n--- 执行清单（确认前） ---\n'
         echo "容器名: ${name}"
         echo "目标镜像: ${image}"
@@ -3405,82 +4304,7 @@ safe_rebuild_wizard() {
           continue
         fi
 
-        if ! run_preflight_checks "rebuild" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
-          log_error "preflight 未通过，请修复后重试"
-          continue
-        fi
-
-        run_cmd mkdir -p "${data_dir}"
-        run_cmd docker pull "${image}"
-
-        local -a rebuild_nonfatal_issues=()
-        if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
-          log_error "重建前 runtime 数据迁移失败；为避免数据丢失，已中止本次重建"
-          continue
-        fi
-
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 手工包清单快照" snapshot_apt_manual_packages "${name}" "${data_dir}"; then
-            rebuild_nonfatal_issues+=("APT 手工包清单快照失败")
-          fi
-        fi
-
-        remove_container_if_exists "${name}"
-        if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
-            log_error "APT 源目录初始化失败，已中止重建以避免空源配置"
-            continue
-          fi
-        fi
-
-        run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-        save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
-
-        if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
-          rebuild_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
-        fi
-        if [[ "${env_persist_choice}" == "1" ]]; then
-          if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
-            rebuild_nonfatal_issues+=("授权目录权限修正失败")
-          fi
-          if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
-            rebuild_nonfatal_issues+=("APT 手工包回放安装失败")
-          fi
-        fi
-
-        if [[ "${deps_repair_choice}" == "1" ]]; then
-          if run_optional_step "重建后依赖补齐" manage_container_runtime_deps "${name}" "install" "${rebuild_dep_set}"; then
-            run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${rebuild_dep_set}" || true
-          else
-            rebuild_nonfatal_issues+=("重建后依赖补齐失败")
-          fi
-        fi
-
-        run_cmd docker ps --filter "name=${name}"
-        run_cmd docker logs --tail 30 "${name}"
-        run_cmd docker exec "${name}" openclaw --version
-
-        if [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]]; then
-          log_error "以下可选步骤失败（重建主流程已完成）:"
-          local issue
-          for issue in "${rebuild_nonfatal_issues[@]}"; do
-            log_error " - ${issue}"
-          done
-          log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
-        fi
-
-        local rebuild_status="success"
-        [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]] && rebuild_status="success_with_warnings"
-        write_last_report "rebuild" "${rebuild_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${rebuild_nonfatal_issues[@]}"
-
-        local rebuild_version rebuild_status_text rebuild_runtime_paths rebuild_deps_installed rebuild_gateway_bind rebuild_token
-        rebuild_version=$(detect_openclaw_version "${name}")
-        rebuild_status_text=$(get_container_status_text "${name}")
-        rebuild_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
-        rebuild_deps_installed=$(detect_installed_deps_summary "${name}" "${rebuild_dep_set}")
-        rebuild_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
-        rebuild_token=$(detect_token_from_config "${data_dir}")
-        print_human_summary "rebuild" "${name}" "${rebuild_version}" "${rebuild_status_text}" "${data_dir}" "${rebuild_runtime_paths}" "${rebuild_deps_installed}" "${rebuild_gateway_bind}" "${rebuild_token}" "${host_port}" "${extra_ports}"
+        execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${deps_repair_choice}" "${rebuild_dep_set}" "${extra_ports}" || continue
         return
         ;;
       q|Q)
@@ -3495,12 +4319,17 @@ safe_rebuild_wizard() {
 }
 
 uninstall_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_uninstall_from_config_file
+    return
+  fi
   printf '\n=== 🗑️ 卸载实例 ===\n'
   echo "流程：选择卸载方式 -> 二次确认容器名 -> 执行"
   local name
   name=$(read_container_name "请输入要卸载的容器名")
 
-  local default_data_dir="/opt/1panel/apps/${name}"
+  local default_data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
   local detected_data_dir
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
@@ -3529,11 +4358,16 @@ uninstall_wizard() {
 }
 
 easyclaw_only_upgrade_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_easyclaw_from_config_file
+    return
+  fi
   printf '\n=== 📦 管理 EasyClaw 工具 ===\n'
   local name
   name=$(read_container_name "请输入容器名（用于定位持久化目录）")
 
-  local default_data_dir="/opt/1panel/apps/${name}"
+  local default_data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
   local detected_data_dir
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
@@ -3551,27 +4385,21 @@ easyclaw_only_upgrade_wizard() {
     return
   fi
 
-  if ! run_preflight_checks "easyclaw-upgrade" "${name}" "${data_dir}"; then
-    log_error "preflight 未通过，请修复后重试"
-    return
-  fi
-
-  local -a easy_nonfatal_issues=()
-  if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
-    easy_nonfatal_issues+=("EasyClaw 检查升级失败")
-  fi
-  local easy_status="success"
-  [[ "${#easy_nonfatal_issues[@]}" -gt 0 ]] && easy_status="success_with_warnings"
-  write_last_report "easyclaw-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
+  execute_easyclaw_upgrade_plan "${name}" "${data_dir}"
 }
 
 deps_manage_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_deps_from_config_file
+    return
+  fi
   printf '\n=== 🔧 检查或补齐运行环境 ===\n'
   echo "提示：用于单独检查或补齐容器依赖，不重建 OpenClaw 容器。"
   local name
   name=$(read_container_name "请输入容器名")
 
-  local default_data_dir="/opt/1panel/apps/${name}"
+  local default_data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
   local detected_data_dir
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
   local data_dir
@@ -3669,23 +4497,59 @@ main_loop() {
 parse_global_flags() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --config-file)
+        if [[ $# -lt 2 ]]; then
+          log_error "--config-file 需要一个文件路径"
+          exit 1
+        fi
+        CONFIG_FILE="$2"
+        shift 2
+        ;;
+      --wizard)
+        if [[ $# -lt 2 ]]; then
+          log_error "--wizard 需要一个值"
+          exit 1
+        fi
+        SELECTED_WIZARD="$2"
+        shift 2
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
         ;;
       --help|-h)
-        echo "用法: bash openclawctl.sh [--dry-run]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall] [--config-file path]"
         echo "默认进入交互式菜单。"
         exit 0
         ;;
       *)
         log_error "未知参数: $1"
-        echo "用法: bash openclawctl.sh [--dry-run]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall]"
         exit 1
         ;;
     esac
   done
 }
 
+run_selected_wizard() {
+  case "${SELECTED_WIZARD}" in
+    install) install_wizard ;;
+    upgrade) upgrade_wizard ;;
+    rebuild) safe_rebuild_wizard ;;
+    easyclaw) easyclaw_only_upgrade_wizard ;;
+    deps) deps_manage_wizard ;;
+    uninstall) uninstall_wizard ;;
+    *)
+      log_error "无效的 wizard: ${SELECTED_WIZARD}"
+      exit 1
+      ;;
+  esac
+}
+
 parse_global_flags "$@"
+maybe_exec_tui "$@" || true
+if [[ -n "${SELECTED_WIZARD}" ]]; then
+  run_selected_wizard
+  exit 0
+fi
 main_loop
