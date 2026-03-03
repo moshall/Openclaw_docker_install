@@ -14,14 +14,22 @@
 ```text
 .
 ├── openclawctl.sh              # 主脚本（真实执行入口）
+├── installer/
+│   └── v07/                    # v0.7 重构版安装器（新入口）
+│       ├── openclaw-install.sh
+│       ├── lib/
+│       └── templates/
 ├── cmd/
 │   └── openclawctl/            # Go TUI（交互前端）
 ├── internal/
 │   └── app/                    # TUI 公共模型/菜单配置
 ├── tests/
 │   └── openclawctl_test.sh     # Shell 交互回归测试
+│   ├── installer_v07_*_test.sh # v0.7 本地非实装测试
+│   └── e2e/                    # 真机回归脚本（需目标 VPS）
 ├── docs/
 │   └── plans/                  # 设计文档
+│   └── rewrite-v0.7/           # v0.7 迁移/发布文档
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -48,6 +56,28 @@ OPENCLAWCTL_FORCE_SHELL=1 bash ./openclawctl.sh
 ```bash
 bash ./openclawctl.sh --dry-run
 ```
+
+## v0.7 重构版入口（开发中）
+
+v0.7 重构版脚本入口：
+
+```bash
+bash ./installer/v07/openclaw-install.sh --help
+```
+
+严格非交互（批量回归）示例：
+
+```bash
+OPENCLAWCTL_STRICT_NONINTERACTIVE=1 \
+bash ./installer/v07/openclaw-install.sh \
+  --wizard install \
+  --config-file /path/to/install.cfg
+```
+
+说明：
+
+- `--wizard` 支持：`install|upgrade|rebuild|status|logs|uninstall`
+- 严格模式会输出 `STRICT_REPORT_PATH=.../runtime/strict-report.json`
 
 ## 镜像策略
 
@@ -117,6 +147,17 @@ bash ./openclawctl.sh --dry-run
 bash -n ./openclawctl.sh
 go test ./...
 bash ./tests/openclawctl_test.sh
+bash ./tests/installer_v07_smoke_test.sh
+bash ./tests/installer_v07_detect_test.sh
+bash ./tests/installer_v07_image_test.sh
+bash ./tests/installer_v07_port_test.sh
+bash ./tests/installer_v07_persist_test.sh
+bash ./tests/installer_v07_compose_test.sh
+bash ./tests/installer_v07_install_flow_test.sh
+bash ./tests/installer_v07_lifecycle_test.sh
+bash ./tests/installer_v07_report_test.sh
+bash ./tests/installer_v07_1panel_test.sh
+bash ./tests/installer_v07_docs_test.sh
 ```
 
 ## 已验证场景

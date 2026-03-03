@@ -1,0 +1,17 @@
+services:
+  __APP_NAME__:
+    container_name: __APP_NAME__
+    image: __IMAGE__
+    restart: unless-stopped
+    command: ["openclaw", "gateway", "run"]
+    ports:
+      - "__PORT_MAIN__:18789"
+      - "__PORT_R1__:7201"
+      - "__PORT_R2__:7202"
+      - "__PORT_R3__:7203"
+__EASYCLAW_PORT_LINE__
+    volumes:
+      - "__DATA_DIR__:__CONTAINER_CONFIG_DIR__"
+      - "__WORKSPACE_DIR__:__CONTAINER_WORKSPACE_DIR__"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
