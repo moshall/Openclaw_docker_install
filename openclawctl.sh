@@ -355,80 +355,9 @@ generate_token() {
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
 }
 
-read_with_default() {
-  local prompt="$1"
-  local default_value="$2"
-  local value
-  printf '%s [%s] (回车使用默认值): ' "${prompt}" "${default_value}" >&2
-  IFS= read -r value
-  value=$(sanitize_user_input "${value}")
-  if [[ -z "${value}" ]]; then
-    printf '%s\n' "${default_value}"
-  else
-    printf '%s\n' "${value}"
-  fi
-}
-
-read_required() {
-  local prompt="$1"
-  local value
-  while true; do
-    printf '%s: ' "${prompt}" >&2
-    IFS= read -r value
-    value=$(sanitize_user_input "${value}")
-    if [[ -n "${value}" ]]; then
-      printf '%s\n' "${value}"
-      return
-    fi
-    log_error "该项不能为空"
-  done
-}
-
-read_container_name() {
-  local prompt="$1"
-  local value
-  while true; do
-    value=$(read_required "${prompt}")
-    if [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-      printf '%s\n' "${value}"
-      return
-    fi
-    log_error "容器名仅允许字母、数字、点、下划线、短横线，且必须以字母或数字开头"
-  done
-}
-
 is_safe_path_text() {
   local value="$1"
   [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]]
-}
-
-read_choice_default() {
-  local prompt="$1"
-  local default_value="$2"
-  local value
-  printf '%s [%s]: ' "${prompt}" "${default_value}" >&2
-  IFS= read -r value
-  value=$(sanitize_user_input "${value}")
-  if [[ -z "${value}" ]]; then
-    printf '%s\n' "${default_value}"
-  else
-    printf '%s\n' "${value}"
-  fi
-}
-
-read_menu_choice() {
-  local prompt="$1"
-  local value
-  printf '%s: ' "${prompt}" >&2
-  IFS= read -r value
-  value=$(sanitize_user_input "${value}")
-  printf '%s\n' "${value}"
-}
-
-clear_interactive_screen() {
-  if [[ -t 1 && "${OPENCLAWCTL_NO_CLEAR:-0}" != "1" ]]; then
-    printf '\033[H\033[2J'
-  fi
 }
 
 stdin_is_tty() {
@@ -526,33 +455,6 @@ maybe_exec_tui() {
   fi
 
   OPENCLAWCTL_TUI_ACTIVE=1 exec "${tui_bin}" --shell-script "$0" "$@"
-}
-
-press_enter_to_continue() {
-  printf '按回车返回: ' >&2
-  local dummy
-  IFS= read -r dummy
-}
-
-sanitize_user_input() {
-  local raw="${1:-}"
-  # Remove control chars (e.g. ESC sequences from arrow keys) to avoid menu corruption.
-  printf '%s' "${raw}" | awk '{gsub(/[[:cntrl:]]/, ""); printf "%s", $0}'
-}
-
-trim_surrounding_spaces() {
-  local raw="${1:-}"
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
-  printf '%s\n' "${raw}"
-}
-
-sanitize_port_mapping_input() {
-  local raw="${1:-}"
-  raw=$(sanitize_user_input "${raw}")
-  # Remove common ANSI cursor fragments that may remain after ESC stripping (e.g. [A, [D).
-  raw=$(printf '%s' "${raw}" | sed -E 's/\[[0-9;]*[A-Za-z]//g')
-  printf '%s\n' "${raw}"
 }
 
 choice_to_yes_no() {

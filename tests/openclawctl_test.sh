@@ -39,6 +39,13 @@ assert_contains "$(cat "${SCRIPT_PATH}")" 'source "${SCRIPT_DIR}/lib/openclawctl
 common_print_cmd_output=$(DRY_RUN=1 SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; print_cmd "hello world" "*.txt"' 2>&1 || true)
 assert_contains "${common_print_cmd_output}" "hello\\ world \\*.txt"
 
+# 0c) io helpers should provide default choices and input sanitizing
+io_default_choice_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; printf "\n" | read_choice_default "请选择" "2"' 2>/dev/null || true)
+assert_contains "${io_default_choice_output}" "2"
+
+io_sanitized_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c $'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; sanitize_user_input "ab\tcd"' 2>&1 || true)
+assert_contains "${io_sanitized_output}" "abcd"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
