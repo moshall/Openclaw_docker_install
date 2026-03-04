@@ -7,6 +7,7 @@ SCRIPT_PATH="${ROOT_DIR}/Openclaw_docker_install/openclawctl.sh"
 if [[ ! -f "${SCRIPT_PATH}" ]]; then
   SCRIPT_PATH="${ROOT_DIR}/openclawctl.sh"
 fi
+SCRIPT_HOME=$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)
 export OPENCLAWCTL_DATA_ROOT="/opt/1panel/apps"
 export OPENCLAW_OFFICIAL_REPO="1panel/openclaw"
 
@@ -33,6 +34,10 @@ assert_not_contains() {
 
 # 0) entry script should load modular bootstrap in fixed order
 assert_contains "$(cat "${SCRIPT_PATH}")" 'source "${SCRIPT_DIR}/lib/openclawctl/bootstrap.sh"'
+
+# 0b) common helpers should provide escaped command rendering
+common_print_cmd_output=$(DRY_RUN=1 SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; print_cmd "hello world" "*.txt"' 2>&1 || true)
+assert_contains "${common_print_cmd_output}" "hello\\ world \\*.txt"
 
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
