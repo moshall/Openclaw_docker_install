@@ -50,6 +50,10 @@ assert_contains "${io_sanitized_output}" "abcd"
 image_fallback_output=$(OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; official_openclaw_repo_path(){ printf "1panel/openclaw\n"; }; resolve_official_tag_with_fallback "upgrade" "docker.io/1panel/openclaw:260226"' 2>&1 || true)
 assert_contains "${image_fallback_output}" "docker.io/1panel/openclaw:2026.2.26"
 
+# 0e) persist helpers should fallback easyclaw web host port on conflict
+persist_easyclaw_mapping_output=$(OPENCLAWCTL_TEST_OCCUPIED_PORTS='4231' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; EASYCLAW_DEFAULT_WEB_PORT=4231; CLAUDECODEUI_RESERVED_CONTAINER_PORT_1=7201; CLAUDECODEUI_RESERVED_CONTAINER_PORT_2=7202; CLAUDECODEUI_RESERVED_CONTAINER_PORT_3=7203; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; ensure_easyclaw_web_port_mapping "1" "4113" "18789" ""' 2>&1 || true)
+assert_contains "${persist_easyclaw_mapping_output}" "5231:4231"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
