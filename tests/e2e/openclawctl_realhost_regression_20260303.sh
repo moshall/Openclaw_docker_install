@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_PATH="${SCRIPT_PATH:-/root/openclawctl.sh}"
 WORKDIR="${WORKDIR:-/root/openclaw-regression-20260303}"
 LOG_DIR="${WORKDIR}/logs"
+MODULAR_SCRIPT_HINT="${MODULAR_SCRIPT_HINT:-tests/e2e/openclawctl_realhost_modular_regression.sh}"
 
 mkdir -p "${WORKDIR}" "${LOG_DIR}"
 
@@ -39,6 +40,7 @@ cleanup_container_and_dir() {
 }
 
 echo "[INFO] regression start: $(date -Iseconds)"
+echo "[INFO] legacy regression script; modular focus script: ${MODULAR_SCRIPT_HINT}"
 
 # reset
 cleanup_container_and_dir "openclaw_rt_linux" "/opt/openclaw/apps/openclaw_rt_linux"
