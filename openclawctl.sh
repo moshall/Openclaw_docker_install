@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DRY_RUN=0
 DEFAULT_HOST_PORT="4113"
 DEFAULT_CONTAINER_PORT="18789"
 DEFAULT_RESTART_POLICY="unless-stopped"
 EASYCLAW_REPO="https://github.com/moshall/easyclaw.git"
 EASYCLAW_DEFAULT_WEB_PORT="4231"
+CLAUDECODEUI_RESERVED_CONTAINER_PORT_1="7201"
+CLAUDECODEUI_RESERVED_CONTAINER_PORT_2="7202"
+CLAUDECODEUI_RESERVED_CONTAINER_PORT_3="7203"
+CLAUDECODEUI_NPM_PACKAGE="@siteboon/claude-code-ui"
+TASKMASTER_NPM_PACKAGE="task-master-ai"
 DEFAULT_DEP_SET="npm uv"
 DEFAULT_ENABLE_BIN_PERSIST="1"
 DEFAULT_ENABLE_ENV_PERSIST="2"
@@ -16,6 +22,13 @@ OFFICIAL_OPENCLAW_REPO_DEFAULT="1panel/openclaw"
 OPENCLAWCTL_TUI_BIN="${OPENCLAWCTL_TUI_BIN:-}"
 SELECTED_WIZARD=""
 CONFIG_FILE=""
+OPTIONAL_COMPONENTS_FILE="${OPENCLAWCTL_COMPONENTS_FILE:-${SCRIPT_DIR}/config/optional-components.conf}"
+DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm easyclaw claudecodeui obsidian ralph"
+DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"
+OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"
+OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"
+OPTIONAL_SOFTWARE_CATALOG=""
+OPTIONAL_SKILL_CATALOG=""
 
 strict_noninteractive_mode_enabled() {
   [[ "${OPENCLAWCTL_STRICT_NONINTERACTIVE:-0}" == "1" ]]
@@ -24,6 +37,10 @@ strict_noninteractive_mode_enabled() {
 strict_report_path() {
   local data_dir="$1"
   printf '%s\n' "${data_dir}/runtime/strict-report.json"
+}
+
+deployment_info_path() {
+  printf '%s\n' "${HOME}/.openclaw-installer/deployment-info.txt"
 }
 
 print_cmd() {
@@ -101,6 +118,56 @@ host_platform() {
     darwin*) echo "darwin" ;;
     *) echo "unknown" ;;
   esac
+}
+
+is_host_port_available() {
+  local port="$1"
+  if [[ -n "${OPENCLAWCTL_TEST_OCCUPIED_PORTS:-}" ]]; then
+    local occupied normalized_port
+    normalized_port=$(printf '%s' "${port}" | tr -d '[:space:]')
+    for occupied in ${OPENCLAWCTL_TEST_OCCUPIED_PORTS//,/ }; do
+      occupied=$(printf '%s' "${occupied}" | tr -d '[:space:]')
+      [[ -z "${occupied}" ]] && continue
+      if [[ "${normalized_port}" == "${occupied}" ]]; then
+        return 1
+      fi
+    done
+    return 0
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -q ":[0-9]*${port}[[:space:]]" && return 1
+    ss -uln 2>/dev/null | grep -q ":[0-9]*${port}[[:space:]]" && return 1
+    return 0
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | grep -q ":${port}[[:space:]]" && return 1
+    netstat -uln 2>/dev/null | grep -q ":${port}[[:space:]]" && return 1
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk '{print $9}' | grep -Eq "[:.]${port}$" && return 1
+    lsof -iUDP -P -n 2>/dev/null | awk '{print $9}' | grep -Eq "[:.]${port}$" && return 1
+    return 0
+  fi
+  return 0
+}
+
+find_recommended_host_port() {
+  local start="${1:-7100}"
+  local end="${2:-7200}"
+  local port
+  for port in $(seq "${start}" "${end}"); do
+    if is_host_port_available "${port}"; then
+      echo "${port}"
+      return 0
+    fi
+  done
+  echo "${DEFAULT_HOST_PORT}"
 }
 
 is_1panel_environment() {
@@ -252,6 +319,89 @@ write_strict_noninteractive_report() {
 }
 EOF
   printf 'STRICT_REPORT_PATH=%s\n' "${report_file}"
+}
+
+write_deployment_info() {
+  local action="$1"
+  local status="$2"
+  local container_name="$3"
+  local data_dir="$4"
+  local image="$5"
+  local host_port="$6"
+  local container_port="$7"
+  local token="$8"
+  local extra_ports="$9"
+  local info_file
+  info_file=$(deployment_info_path)
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "DEPLOYMENT_INFO_PATH=${info_file}"
+    return 0
+  fi
+
+  local access_host access_url local_url generated_at
+  access_host=$(detect_access_host)
+  access_url="http://${access_host}:${host_port}"
+  local_url="http://localhost:${host_port}"
+  if [[ -n "${token}" ]]; then
+    access_url="${access_url}/?token=${token}"
+    local_url="${local_url}/?token=${token}"
+  fi
+  generated_at=$(date "+%Y-%m-%d %H:%M:%S %Z")
+
+  local installed_software_set software_summary skill_summary
+  installed_software_set=$(load_software_profile "${data_dir}")
+  software_summary=$(software_set_summary "${installed_software_set}")
+  skill_summary=$(skill_set_summary "$(load_skill_profile "${data_dir}")")
+
+  run_cmd mkdir -p "$(dirname "${info_file}")"
+  cat > "${info_file}" <<EOF
+OpenClaw 部署信息
+生成时间：${generated_at}
+═══════════════════════════════════════════════════════════
+
+【基础信息】
+  操作：      ${action}
+  状态：      ${status}
+  容器名：    ${container_name}
+  镜像：      ${image}
+  数据目录：  ${data_dir}
+
+【访问信息】
+  Dashboard： ${access_url}
+  本地访问：  ${local_url}
+  连接 Token： ${token:-<未显式输出>}
+
+【端口映射】
+  主服务：    ${host_port} -> 容器 ${container_port}
+  扩展端口：  ${extra_ports:-<无>}
+
+【扩展能力】
+  可选软件：  ${software_summary}
+  Skills：    ${skill_summary}
+
+【常用命令】
+  查看状态：  docker ps --filter name=^${container_name}$
+  查看日志：  docker logs -f ${container_name}
+  进入容器：  docker exec -it ${container_name} bash
+  查看此文件：cat ${info_file}
+═══════════════════════════════════════════════════════════
+EOF
+  echo "DEPLOYMENT_INFO_PATH=${info_file}"
+}
+
+show_deployment_info() {
+  local info_file
+  info_file=$(deployment_info_path)
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "deployment-info path: ${info_file}"
+    return 0
+  fi
+  if [[ ! -f "${info_file}" ]]; then
+    log_error "未找到部署信息文件: ${info_file}"
+    return 1
+  fi
+  cat "${info_file}"
 }
 
 generate_token() {
@@ -531,6 +681,23 @@ is_official_openclaw_image_ref() {
   repo="${parts%%|*}"
   repo=$(image_repo_without_registry "${repo}")
   [[ "${repo}" == "$(official_openclaw_repo_path)" ]]
+}
+
+is_openclaw_zh_image_ref() {
+  local image="$1"
+  local parts repo
+  parts=$(split_image_repo_and_tag "${image}")
+  repo="${parts%%|*}"
+  repo=$(printf '%s' "${repo}" | tr '[:upper:]' '[:lower:]')
+  [[ "${repo}" == "openclaw-zh" || "${repo}" == */openclaw-zh ]]
+}
+
+should_persist_node_modules_mount() {
+  local image="$1"
+  if is_openclaw_zh_image_ref "${image}"; then
+    return 1
+  fi
+  return 0
 }
 
 tag_exists_in_array() {
@@ -922,20 +1089,29 @@ run_gateway_container() {
   local enable_cache_persist="${10:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
   local volume_args=()
   local port_args=("-p" "${host_port}:${container_port}")
+  local persist_node_modules_mount="1"
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
-    run_cmd mkdir -p "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/root-go-bin"
+    run_cmd mkdir -p "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/root-go-bin" "${data_dir}/runtime/root-cargo-bin"
     volume_args+=("-v" "${data_dir}/runtime/root-local-bin:/root/.local/bin")
     volume_args+=("-v" "${data_dir}/runtime/root-go-bin:/root/go/bin")
+    volume_args+=("-v" "${data_dir}/runtime/root-cargo-bin:/root/.cargo/bin")
   fi
 
   if [[ "${enable_env_persist}" == "1" ]]; then
+    if should_persist_node_modules_mount "${image}"; then
+      persist_node_modules_mount="1"
+    else
+      persist_node_modules_mount="0"
+      log_info "[persist] 检测到 zh 镜像，已跳过 /usr/local/lib/node_modules 持久化挂载（避免覆盖镜像内 openclaw 入口）"
+    fi
+
     run_cmd mkdir -p "${data_dir}/runtime/usr-local-go" \
-      "${data_dir}/runtime/usr-local-lib-node-modules" \
       "${data_dir}/runtime/root-local-lib" \
       "${data_dir}/runtime/root-local-share-uv" \
       "${data_dir}/runtime/root-local-pipx" \
       "${data_dir}/runtime/root-local-share-pipx" \
+      "${data_dir}/runtime/root-rustup" \
       "${data_dir}/runtime/root-config" \
       "${data_dir}/runtime/root-ssh" \
       "${data_dir}/runtime/root-docker" \
@@ -946,11 +1122,15 @@ run_gateway_container() {
       "${data_dir}/runtime/root-npmrc" \
       "${data_dir}/runtime/root-pypirc"
     volume_args+=("-v" "${data_dir}/runtime/usr-local-go:/usr/local/go")
-    volume_args+=("-v" "${data_dir}/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules")
+    if [[ "${persist_node_modules_mount}" == "1" ]]; then
+      run_cmd mkdir -p "${data_dir}/runtime/usr-local-lib-node-modules"
+      volume_args+=("-v" "${data_dir}/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules")
+    fi
     volume_args+=("-v" "${data_dir}/runtime/root-local-lib:/root/.local/lib")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv")
     volume_args+=("-v" "${data_dir}/runtime/root-local-pipx:/root/.local/pipx")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx")
+    volume_args+=("-v" "${data_dir}/runtime/root-rustup:/root/.rustup")
     volume_args+=("-v" "${data_dir}/runtime/root-config:/root/.config")
     volume_args+=("-v" "${data_dir}/runtime/root-ssh:/root/.ssh")
     volume_args+=("-v" "${data_dir}/runtime/root-gitconfig:/root/.gitconfig")
@@ -969,9 +1149,11 @@ run_gateway_container() {
   fi
 
   if [[ "${enable_cache_persist}" == "1" ]]; then
-    run_cmd mkdir -p "${data_dir}/runtime/root-npm-cache" "${data_dir}/runtime/root-go-pkg-mod"
+    run_cmd mkdir -p "${data_dir}/runtime/root-npm-cache" "${data_dir}/runtime/root-go-pkg-mod" "${data_dir}/runtime/root-cargo-registry" "${data_dir}/runtime/root-cargo-git"
     volume_args+=("-v" "${data_dir}/runtime/root-npm-cache:/root/.npm")
     volume_args+=("-v" "${data_dir}/runtime/root-go-pkg-mod:/root/go/pkg/mod")
+    volume_args+=("-v" "${data_dir}/runtime/root-cargo-registry:/root/.cargo/registry")
+    volume_args+=("-v" "${data_dir}/runtime/root-cargo-git:/root/.cargo/git")
   fi
 
   if [[ -n "${extra_ports}" ]]; then
@@ -1212,10 +1394,18 @@ should_skip_migration_for_path() {
 pre_upgrade_migrate_runtime_data() {
   local container_name="$1"
   local data_dir="$2"
-  local enable_bin_persist="$3"
-  local enable_env_persist="$4"
-  local enable_apt_cfg_persist="${5:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
-  local enable_cache_persist="${6:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
+  local image="$3"
+  local enable_bin_persist="$4"
+  local enable_env_persist="$5"
+  local enable_apt_cfg_persist="${6:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
+  local enable_cache_persist="${7:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
+  local persist_node_modules_mount="1"
+
+  if should_persist_node_modules_mount "${image}"; then
+    persist_node_modules_mount="1"
+  else
+    persist_node_modules_mount="0"
+  fi
 
   if [[ "${enable_bin_persist}" != "1" && "${enable_env_persist}" != "1" && "${enable_apt_cfg_persist}" != "1" && "${enable_cache_persist}" != "1" ]]; then
     log_info "[迁移] 本次未启用 runtime 持久化，跳过升级前迁移"
@@ -1231,12 +1421,14 @@ pre_upgrade_migrate_runtime_data() {
 
   local target_root_local_bin="${data_dir}/runtime/root-local-bin"
   local target_root_go_bin="${data_dir}/runtime/root-go-bin"
+  local target_root_cargo_bin="${data_dir}/runtime/root-cargo-bin"
   local target_usr_local_go="${data_dir}/runtime/usr-local-go"
   local target_usr_local_lib_node_modules="${data_dir}/runtime/usr-local-lib-node-modules"
   local target_root_local_lib="${data_dir}/runtime/root-local-lib"
   local target_root_local_share_uv="${data_dir}/runtime/root-local-share-uv"
   local target_root_local_pipx="${data_dir}/runtime/root-local-pipx"
   local target_root_local_share_pipx="${data_dir}/runtime/root-local-share-pipx"
+  local target_root_rustup="${data_dir}/runtime/root-rustup"
   local target_root_config="${data_dir}/runtime/root-config"
   local target_root_ssh="${data_dir}/runtime/root-ssh"
   local target_root_gitconfig="${data_dir}/runtime/root-gitconfig"
@@ -1250,15 +1442,21 @@ pre_upgrade_migrate_runtime_data() {
   local target_etc_apt_keyrings="${data_dir}/runtime/etc-apt-keyrings"
   local target_root_npm_cache="${data_dir}/runtime/root-npm-cache"
   local target_root_go_pkg_mod="${data_dir}/runtime/root-go-pkg-mod"
+  local target_root_cargo_registry="${data_dir}/runtime/root-cargo-registry"
+  local target_root_cargo_git="${data_dir}/runtime/root-cargo-git"
 
   validate_runtime_target_path "${data_dir}" "${target_root_local_bin}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_go_bin}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_cargo_bin}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_usr_local_go}" || return 1
-  validate_runtime_target_path "${data_dir}" "${target_usr_local_lib_node_modules}" || return 1
+  if [[ "${persist_node_modules_mount}" == "1" ]]; then
+    validate_runtime_target_path "${data_dir}" "${target_usr_local_lib_node_modules}" || return 1
+  fi
   validate_runtime_target_path "${data_dir}" "${target_root_local_lib}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_uv}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_pipx}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_pipx}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_rustup}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_config}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_ssh}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_gitconfig}" || return 1
@@ -1272,6 +1470,8 @@ pre_upgrade_migrate_runtime_data() {
   validate_runtime_target_path "${data_dir}" "${target_etc_apt_keyrings}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_npm_cache}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_go_pkg_mod}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_cargo_registry}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_cargo_git}" || return 1
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/bin" "${target_root_local_bin}" "bin:/root/.local/bin"; then
@@ -1280,14 +1480,21 @@ pre_upgrade_migrate_runtime_data() {
     if ! should_skip_migration_for_path "${container_name}" "/root/go/bin" "${target_root_go_bin}" "bin:/root/go/bin"; then
       copy_dir_from_container_to_host "${container_name}" "/root/go/bin" "${target_root_go_bin}" "bin:/root/go/bin" || return 1
     fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.cargo/bin" "${target_root_cargo_bin}" "bin:/root/.cargo/bin"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.cargo/bin" "${target_root_cargo_bin}" "bin:/root/.cargo/bin" || return 1
+    fi
   fi
 
   if [[ "${enable_env_persist}" == "1" ]]; then
     if ! should_skip_migration_for_path "${container_name}" "/usr/local/go" "${target_usr_local_go}" "env:/usr/local/go"; then
       copy_dir_from_container_to_host "${container_name}" "/usr/local/go" "${target_usr_local_go}" "env:/usr/local/go" || return 1
     fi
-    if ! should_skip_migration_for_path "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules"; then
-      copy_dir_from_container_to_host "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules" || return 1
+    if [[ "${persist_node_modules_mount}" == "1" ]]; then
+      if ! should_skip_migration_for_path "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules"; then
+        copy_dir_from_container_to_host "${container_name}" "/usr/local/lib/node_modules" "${target_usr_local_lib_node_modules}" "env:/usr/local/lib/node_modules" || return 1
+      fi
+    else
+      log_info "[迁移] 检测到 zh 镜像策略，已跳过 env:/usr/local/lib/node_modules 迁移"
     fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/lib" "${target_root_local_lib}" "env:/root/.local/lib"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.local/lib" "${target_root_local_lib}" "env:/root/.local/lib" || return 1
@@ -1300,6 +1507,9 @@ pre_upgrade_migrate_runtime_data() {
     fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.rustup" "${target_root_rustup}" "env:/root/.rustup"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.rustup" "${target_root_rustup}" "env:/root/.rustup" || return 1
     fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.config" "${target_root_config}" "env:/root/.config"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.config" "${target_root_config}" "env:/root/.config" || return 1
@@ -1346,6 +1556,12 @@ pre_upgrade_migrate_runtime_data() {
     if ! should_skip_migration_for_path "${container_name}" "/root/go/pkg/mod" "${target_root_go_pkg_mod}" "cache:/root/go/pkg/mod"; then
       copy_dir_from_container_to_host "${container_name}" "/root/go/pkg/mod" "${target_root_go_pkg_mod}" "cache:/root/go/pkg/mod" || return 1
     fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.cargo/registry" "${target_root_cargo_registry}" "cache:/root/.cargo/registry"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.cargo/registry" "${target_root_cargo_registry}" "cache:/root/.cargo/registry" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.cargo/git" "${target_root_cargo_git}" "cache:/root/.cargo/git"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.cargo/git" "${target_root_cargo_git}" "cache:/root/.cargo/git" || return 1
+    fi
   fi
 
   log_info "[迁移] 升级前 runtime 数据迁移完成"
@@ -1359,6 +1575,177 @@ easyclaw_target_dir() {
 
 easyclaw_container_install_dir() {
   echo "/root/.openclaw/software/easyclaw"
+}
+
+extra_ports_has_host_or_container_conflict() {
+  local extra_ports="$1"
+  local target_host="$2"
+  local target_container="$3"
+  local token host_part container_part
+  for token in ${extra_ports}; do
+    [[ -z "${token}" ]] && continue
+    host_part="${token%%:*}"
+    container_part="${token#*:}"
+    if [[ "${container_part}" == */* ]]; then
+      container_part="${container_part%%/*}"
+    fi
+    if [[ "${host_part}" == "${target_host}" || "${container_part}" == "${target_container}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_claudecodeui_reserved_mapping() {
+  local extra_ports="${1:-}"
+  local token host_part container_part
+  for token in ${extra_ports}; do
+    [[ -z "${token}" ]] && continue
+    host_part="${token%%:*}"
+    container_part="${token#*:}"
+    if [[ "${container_part}" == */* ]]; then
+      container_part="${container_part%%/*}"
+    fi
+    case "${container_part}" in
+      "${CLAUDECODEUI_RESERVED_CONTAINER_PORT_1}"|"${CLAUDECODEUI_RESERVED_CONTAINER_PORT_2}"|"${CLAUDECODEUI_RESERVED_CONTAINER_PORT_3}")
+        printf '%s:%s\n' "${host_part}" "${container_part}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+detect_easyclaw_web_mapping() {
+  local extra_ports="${1:-}"
+  local token host_part container_part
+  for token in ${extra_ports}; do
+    [[ -z "${token}" ]] && continue
+    host_part="${token%%:*}"
+    container_part="${token#*:}"
+    if [[ "${container_part}" == */* ]]; then
+      container_part="${container_part%%/*}"
+    fi
+    if [[ "${container_part}" == "${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
+      printf '%s:%s\n' "${host_part}" "${container_part}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+choose_easyclaw_web_mapping() {
+  local host_port="$1"
+  local container_port="$2"
+  local extra_ports="${3:-}"
+
+  [[ "${host_port}" =~ ^[0-9]+$ ]] || return 1
+
+  local -a host_candidates=("${EASYCLAW_DEFAULT_WEB_PORT}" "5231")
+  local port_candidate
+  for port_candidate in $(seq 4232 4299); do
+    host_candidates+=("${port_candidate}")
+  done
+
+  local host_candidate
+  for host_candidate in "${host_candidates[@]}"; do
+    if [[ "${host_candidate}" == "${host_port}" ]]; then
+      continue
+    fi
+    if extra_ports_has_host_or_container_conflict "${extra_ports}" "${host_candidate}" "${EASYCLAW_DEFAULT_WEB_PORT}"; then
+      continue
+    fi
+    if ! is_host_port_available "${host_candidate}"; then
+      continue
+    fi
+    printf '%s:%s\n' "${host_candidate}" "${EASYCLAW_DEFAULT_WEB_PORT}"
+    return 0
+  done
+
+  return 1
+}
+
+choose_claudecodeui_reserved_mapping() {
+  local host_port="$1"
+  local container_port="$2"
+  local extra_ports="${3:-}"
+
+  [[ "${host_port}" =~ ^[0-9]+$ ]] || return 1
+
+  local -a container_candidates=(
+    "${CLAUDECODEUI_RESERVED_CONTAINER_PORT_1}"
+    "${CLAUDECODEUI_RESERVED_CONTAINER_PORT_2}"
+    "${CLAUDECODEUI_RESERVED_CONTAINER_PORT_3}"
+  )
+
+  local idx host_candidate container_candidate
+  for idx in 0 1 2; do
+    host_candidate=$((10#${host_port} + idx + 1))
+    container_candidate="${container_candidates[$idx]}"
+
+    if [[ "${container_candidate}" == "${container_port}" ]]; then
+      continue
+    fi
+    if extra_ports_has_host_or_container_conflict "${extra_ports}" "${host_candidate}" "${container_candidate}"; then
+      continue
+    fi
+    if [[ "${DRY_RUN}" -eq 0 ]] && ! is_host_port_available "${host_candidate}"; then
+      continue
+    fi
+    printf '%s:%s\n' "${host_candidate}" "${container_candidate}"
+    return 0
+  done
+  return 1
+}
+
+ensure_claudecodeui_reserved_port_mapping() {
+  local enabled="$1"
+  local host_port="$2"
+  local container_port="$3"
+  local extra_ports="${4:-}"
+
+  if [[ "${enabled}" != "1" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
+
+  local current
+  current=$(detect_claudecodeui_reserved_mapping "${extra_ports}" || true)
+  if [[ -n "${current}" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
+
+  local selected
+  selected=$(choose_claudecodeui_reserved_mapping "${host_port}" "${container_port}" "${extra_ports}" || true)
+  if [[ -z "${selected}" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
+
+  echo "${extra_ports}${extra_ports:+ }${selected}"
+}
+
+should_enable_claudecodeui_reserved_port() {
+  local requested="$1"
+  local container_name="${2:-}"
+  local data_dir="${3:-}"
+
+  if [[ "${requested}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${data_dir}" ]]; then
+    if [[ -x "${data_dir}/software/bin/cloudcli" || -x "${data_dir}/software/bin/claude-code-ui" || -x "${data_dir}/software/bin/task-master" ]]; then
+      return 0
+    fi
+  fi
+
+  if [[ -n "${container_name}" ]] && docker exec "${container_name}" sh -lc 'command -v cloudcli >/dev/null 2>&1 || command -v claude-code-ui >/dev/null 2>&1' >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
 }
 
 ensure_easyclaw_web_port_mapping() {
@@ -1377,23 +1764,26 @@ ensure_easyclaw_web_port_mapping() {
     return
   fi
 
-  local token host_part container_part proto
-  for token in ${extra_ports}; do
-    [[ -z "${token}" ]] && continue
-    host_part="${token%%:*}"
-    container_part="${token#*:}"
-    proto="tcp"
-    if [[ "${container_part}" == */* ]]; then
-      proto="${container_part#*/}"
-      container_part="${container_part%%/*}"
-    fi
-    if [[ "${host_part}" == "${EASYCLAW_DEFAULT_WEB_PORT}" || "${container_part}" == "${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
-      echo "${extra_ports}"
-      return
-    fi
-  done
+  local current
+  current=$(detect_easyclaw_web_mapping "${extra_ports}" || true)
+  if [[ -n "${current}" ]]; then
+    echo "${extra_ports}"
+    return
+  fi
 
-  echo "${extra_ports}${extra_ports:+ }${EASYCLAW_DEFAULT_WEB_PORT}:${EASYCLAW_DEFAULT_WEB_PORT}"
+  local selected
+  selected=$(choose_easyclaw_web_mapping "${host_port}" "${container_port}" "${extra_ports}" || true)
+  if [[ -z "${selected}" ]]; then
+    log_error "EasyClaw Web 端口自动映射失败，已保留当前端口配置"
+    echo "${extra_ports}"
+    return
+  fi
+
+  if [[ "${selected}" != "${EASYCLAW_DEFAULT_WEB_PORT}:${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
+    printf '[INFO] 检测到 EasyClaw Web 默认端口冲突，已改用 %s\n' "${selected}" >&2
+  fi
+
+  echo "${extra_ports}${extra_ports:+ }${selected}"
 }
 
 should_enable_easyclaw_web_port() {
@@ -1423,9 +1813,32 @@ need_python=0
 if ! command -v python3 >/dev/null 2>&1; then
   need_python=1
 fi
+need_pip=0
+if command -v pip3 >/dev/null 2>&1; then
+  need_pip=0
+elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+  need_pip=0
+else
+  need_pip=1
+fi
+python_can_create_venv() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+  local tmpd
+  tmpd=$(mktemp -d /tmp/openclaw-easyclaw-venv-check.XXXXXX 2>/dev/null || true)
+  if [ -z "$tmpd" ]; then
+    python3 -m venv -h >/dev/null 2>&1
+    return $?
+  fi
+  local rc=0
+  python3 -m venv "$tmpd/probe" >/dev/null 2>&1 || rc=$?
+  rm -rf "$tmpd" >/dev/null 2>&1 || true
+  [ "$rc" -eq 0 ]
+}
 need_venv=0
 if command -v python3 >/dev/null 2>&1; then
-  python3 -m venv -h >/dev/null 2>&1 || need_venv=1
+  python_can_create_venv || need_venv=1
 else
   need_venv=1
 fi
@@ -1439,15 +1852,27 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v yum >/dev/null 2>&1; then
   pm="yum"
 fi
-if [ "$need_python" -eq 1 ] || [ "$need_venv" -eq 1 ]; then
+if [ "$need_python" -eq 1 ] || [ "$need_pip" -eq 1 ] || [ "$need_venv" -eq 1 ]; then
   case "$pm" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y python3 python3-venv
+      apt-get install -y python3 python3-pip
+      if [ "$need_venv" -eq 1 ]; then
+        apt-get install -y python3-venv || true
+        if command -v python3 >/dev/null 2>&1 && ! python3 -m venv -h >/dev/null 2>&1; then
+          py_minor="$(python3 -c '\''import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'\'' 2>/dev/null || true)"
+          if [ -n "$py_minor" ]; then
+            apt-get install -y "python${py_minor}-venv" || true
+          fi
+        fi
+      fi
+      if [ "$need_pip" -eq 1 ] && command -v python3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
+        python3 -m ensurepip --upgrade || true
+      fi
       ;;
     apk)
-      apk add --no-cache python3 py3-pip
+      apk add --no-cache python3 py3-pip py3-virtualenv
       ;;
     dnf)
       dnf install -y python3 python3-pip python3-virtualenv || dnf install -y python3 python3-pip
@@ -1456,11 +1881,37 @@ if [ "$need_python" -eq 1 ] || [ "$need_venv" -eq 1 ]; then
       yum install -y python3 python3-pip python3-virtualenv || yum install -y python3 python3-pip
       ;;
     *)
-      echo "[easyclaw] no supported package manager found for python3/python3-venv"
+      echo "[easyclaw] no supported package manager found for python3/python3-pip/python3-venv"
       exit 1
       ;;
   esac
 fi
+if [ "$need_venv" -eq 1 ] && ! python_can_create_venv; then
+  echo "[easyclaw] python venv is still unavailable after dependency install"
+  exit 1
+fi
+
+easyclaw_venv_dir="/root/.openclaw/software/easyclaw/.venv"
+if [ -d "$easyclaw_venv_dir" ]; then
+  if [ ! -x "$easyclaw_venv_dir/bin/python3" ] || [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
+    rm -rf "$easyclaw_venv_dir"
+  fi
+fi
+if [ ! -d "$easyclaw_venv_dir" ]; then
+  python3 -m venv "$easyclaw_venv_dir" >/dev/null 2>&1 || true
+fi
+if [ ! -x "$easyclaw_venv_dir/bin/pip" ] && [ -x "$easyclaw_venv_dir/bin/python3" ]; then
+  "$easyclaw_venv_dir/bin/python3" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+if [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
+  rm -rf "$easyclaw_venv_dir"
+  python3 -m venv "$easyclaw_venv_dir" >/dev/null 2>&1 || true
+fi
+if [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
+  echo "[easyclaw] python virtualenv is broken: missing pip in ${easyclaw_venv_dir}"
+  exit 1
+fi
+
 cd /root/.openclaw/software/easyclaw
 EASYCLAW_INSTALL_DIR=/root/.openclaw/software/easyclaw \
 EASYCLAW_BIN_DIR=/usr/local/bin \
@@ -1547,6 +1998,367 @@ check_and_upgrade_easyclaw() {
   run_easyclaw_install_script "${container_name}"
 }
 
+run_optional_software_script() {
+  local container_name="$1"
+  local label="$2"
+  local script="$3"
+  run_cmd_brief "docker exec ${container_name} bash -lc <${label}>" \
+    docker exec "${container_name}" bash -lc "${script}"
+}
+
+install_software_gh() {
+  local container_name="$1"
+  local script='set -e
+target_bin=/root/.openclaw/software/bin
+mkdir -p "$target_bin"
+arch_raw=$(uname -m 2>/dev/null || echo unknown)
+arch="amd64"
+case "$arch_raw" in
+  x86_64|amd64) arch="amd64" ;;
+  aarch64|arm64) arch="arm64" ;;
+esac
+ver=""
+if command -v curl >/dev/null 2>&1; then
+  ver=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest 2>/dev/null | grep -m1 "\"tag_name\":" | sed -E "s/.*\"v?([^\"]+)\".*/\\1/" || true)
+fi
+[ -n "$ver" ] || ver="2.67.0"
+url="https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_${arch}.tar.gz"
+tmpd=$(mktemp -d)
+cleanup() { rm -rf "$tmpd"; }
+trap cleanup EXIT
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$url" -o "$tmpd/gh.tgz"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$tmpd/gh.tgz" "$url"
+else
+  echo "[software] gh install requires curl or wget"
+  exit 1
+fi
+tar -xzf "$tmpd/gh.tgz" -C "$tmpd"
+bin_path=$(find "$tmpd" -type f -path "*/bin/gh" | head -n1)
+[ -n "$bin_path" ] || { echo "[software] gh binary not found in archive"; exit 1; }
+install -m 0755 "$bin_path" "${target_bin}/gh"
+ln -sf "${target_bin}/gh" /usr/local/bin/gh || true'
+  run_optional_software_script "${container_name}" "software-gh-install-script" "${script}"
+}
+
+install_software_npm_package() {
+  local container_name="$1"
+  local package_name="$2"
+  local binary_name="$3"
+  local script='set -e
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[software] npm not found"
+  exit 1
+fi
+mkdir -p /root/.openclaw/software/bin /root/.openclaw/software/lib
+npm install -g --prefix /root/.openclaw/software '"${package_name}"'
+[ -x /root/.openclaw/software/bin/'"${binary_name}"' ] && ln -sf /root/.openclaw/software/bin/'"${binary_name}"' /usr/local/bin/'"${binary_name}"' || true'
+  run_optional_software_script "${container_name}" "software-npm-${binary_name}-install-script" "${script}"
+}
+
+install_software_notebooklm() {
+  local container_name="$1"
+  local script='set -e
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[software] python3 not found for notebooklm"
+  exit 1
+fi
+mkdir -p /root/.openclaw/software/python /root/.openclaw/software/bin
+python3 -m pip install --no-cache-dir --target /root/.openclaw/software/python "notebooklm-py[browser]"
+cat > /root/.openclaw/software/bin/notebooklm << "EOF"
+#!/usr/bin/env bash
+PYTHONPATH=/root/.openclaw/software/python python3 -m notebooklm "$@"
+EOF
+chmod +x /root/.openclaw/software/bin/notebooklm
+ln -sf /root/.openclaw/software/bin/notebooklm /usr/local/bin/notebooklm || true
+python3 -m playwright install chromium >/dev/null 2>&1 || true'
+  run_optional_software_script "${container_name}" "software-notebooklm-install-script" "${script}"
+}
+
+install_software_guidance_wrapper() {
+  local container_name="$1"
+  local command_name="$2"
+  local guidance="$3"
+  local script='set -e
+mkdir -p /root/.openclaw/software/bin
+cat > /root/.openclaw/software/bin/'"${command_name}"' << "EOF"
+#!/usr/bin/env bash
+echo "'"$(printf '%s' "${guidance}" | sed 's/"/\\"/g')"'"
+exit 1
+EOF
+chmod +x /root/.openclaw/software/bin/'"${command_name}"'
+ln -sf /root/.openclaw/software/bin/'"${command_name}"' /usr/local/bin/'"${command_name}"' || true'
+  run_optional_software_script "${container_name}" "software-guidance-${command_name}-install-script" "${script}"
+}
+
+install_software_claudecodeui() {
+  local container_name="$1"
+  local container_ui_port="${2:-${CLAUDECODEUI_RESERVED_CONTAINER_PORT_1}}"
+  local script='set -e
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[software] npm not found"
+  exit 1
+fi
+mkdir -p /root/.openclaw/software/bin /root/.openclaw/software/claudecodeui
+npm install -g --prefix /root/.openclaw/software '"${CLAUDECODEUI_NPM_PACKAGE}"' '"${TASKMASTER_NPM_PACKAGE}"'
+for bin_name in cloudcli claude-code-ui task-master task-master-ai; do
+  if [ -x "/root/.openclaw/software/bin/${bin_name}" ]; then
+    ln -sf "/root/.openclaw/software/bin/${bin_name}" "/usr/local/bin/${bin_name}" || true
+  fi
+done
+cat > /root/.openclaw/software/bin/claudecodeui-start << "EOF"
+#!/usr/bin/env bash
+exec cloudcli --port '"${container_ui_port}"' "$@"
+EOF
+chmod +x /root/.openclaw/software/bin/claudecodeui-start
+ln -sf /root/.openclaw/software/bin/claudecodeui-start /usr/local/bin/claudecodeui-start || true
+printf "CONTAINER_PORT=%s\n" '"${container_ui_port}"' > /root/.openclaw/software/claudecodeui/runtime.env
+
+claude_cfg="/root/.claude.json"
+if [ ! -f "$claude_cfg" ]; then
+  printf "{}\n" > "$claude_cfg"
+fi
+node - "$claude_cfg" << "NODE"
+const fs = require("fs");
+const cfgPath = process.argv[2];
+let cfg = {};
+try {
+  cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+    cfg = {};
+  }
+} catch (_) {
+  cfg = {};
+}
+
+if (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers)) {
+  cfg.mcpServers = {};
+}
+
+const existing = cfg.mcpServers["task-master-ai"];
+if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+  cfg.mcpServers["task-master-ai"] = {
+    command: "npx",
+    args: ["-y", "task-master-ai"]
+  };
+} else {
+  if (!existing.command) {
+    existing.command = "npx";
+  }
+  if (!Array.isArray(existing.args) || existing.args.length === 0) {
+    existing.args = ["-y", "task-master-ai"];
+  }
+  cfg.mcpServers["task-master-ai"] = existing;
+}
+
+fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\\n");
+NODE'
+  run_optional_software_script "${container_name}" "software-claudecodeui-install-script" "${script}"
+}
+
+install_selected_software() {
+  local container_name="$1"
+  local data_dir="$2"
+  local selected
+  selected=$(normalize_software_set "${3:-}")
+  local extra_ports="${6:-}"
+  [[ -n "${selected}" ]] || {
+    log_info "未选择可选软件，跳过安装"
+    return 0
+  }
+
+  local failed=0
+  local token
+  for token in ${selected}; do
+    local kind arg1 arg2
+    kind=$(catalog_field_for_id "software" "${token}" "kind")
+    arg1=$(catalog_field_for_id "software" "${token}" "arg1")
+    arg2=$(catalog_field_for_id "software" "${token}" "arg2")
+
+    case "${kind}" in
+      gh_binary)
+        install_software_gh "${container_name}" || failed=1
+        ;;
+      npm_package)
+        if [[ -z "${arg1}" || -z "${arg2}" ]]; then
+          log_error "软件定义缺少 npm 参数: ${token}"
+          failed=1
+        else
+          install_software_npm_package "${container_name}" "${arg1}" "${arg2}" || failed=1
+        fi
+        ;;
+      notebooklm)
+        install_software_notebooklm "${container_name}" || failed=1
+        ;;
+      easyclaw)
+        install_easyclaw "${container_name}" "${data_dir}" || failed=1
+        ;;
+      claudecodeui)
+        local claudecodeui_mapping claudecodeui_container_port
+        claudecodeui_mapping=$(detect_claudecodeui_reserved_mapping "${extra_ports}" || true)
+        claudecodeui_container_port="${CLAUDECODEUI_RESERVED_CONTAINER_PORT_1}"
+        if [[ -n "${claudecodeui_mapping}" ]]; then
+          claudecodeui_container_port="${claudecodeui_mapping#*:}"
+        fi
+        install_software_claudecodeui "${container_name}" "${claudecodeui_container_port}" || failed=1
+        ;;
+      guidance)
+        if [[ -z "${arg1}" ]]; then
+          arg1="该工具依赖桌面环境，当前仅写入说明 wrapper。"
+        fi
+        install_software_guidance_wrapper "${container_name}" "${token}" "${arg1}" || failed=1
+        ;;
+      "")
+        log_error "未找到软件定义: ${token}"
+        failed=1
+        ;;
+      *)
+        log_error "不支持的软件安装类型: ${kind} (${token})"
+        failed=1
+        ;;
+    esac
+  done
+
+  [[ "${failed}" -eq 0 ]]
+}
+
+skills_workspace_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/workspace/skills"
+}
+
+install_skill_obsidian() {
+  local data_dir="$1"
+  local skills_dir
+  skills_dir=$(skills_workspace_dir "${data_dir}")
+  local target="${skills_dir}/obsidian-skills"
+
+  run_cmd mkdir -p "${skills_dir}"
+  if [[ -d "${target}/.git" ]]; then
+    run_cmd git -C "${target}" pull --ff-only
+  else
+    run_cmd git clone --depth=1 "https://github.com/kepano/obsidian-skills.git" "${target}"
+  fi
+}
+
+install_skill_security_checker() {
+  local data_dir="$1"
+  local skills_dir
+  skills_dir=$(skills_workspace_dir "${data_dir}")
+  local target="${skills_dir}/security-checker"
+
+  run_cmd mkdir -p "${skills_dir}"
+  if [[ -d "${target}/.git" ]]; then
+    run_cmd git -C "${target}" pull --ff-only
+    return
+  fi
+
+  run_cmd git clone --depth=1 --filter=blob:none --sparse "https://github.com/moshall/skill_collcet.git" "${target}"
+  run_cmd git -C "${target}" sparse-checkout set security-checker
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd bash -lc "shopt -s dotglob nullglob; mv '${target}/security-checker/'* '${target}/' 2>/dev/null || true; rm -rf '${target}/security-checker'"
+  else
+    if [[ -d "${target}/security-checker" ]]; then
+      shopt -s dotglob nullglob
+      mv "${target}/security-checker/"* "${target}/" 2>/dev/null || true
+      shopt -u dotglob nullglob
+      rm -rf "${target}/security-checker"
+    fi
+  fi
+}
+
+install_skill_git_clone() {
+  local data_dir="$1"
+  local target_id="$2"
+  local repo_url="$3"
+  local skills_dir
+  skills_dir=$(skills_workspace_dir "${data_dir}")
+  local target="${skills_dir}/${target_id}"
+
+  run_cmd mkdir -p "${skills_dir}"
+  if [[ -d "${target}/.git" ]]; then
+    run_cmd git -C "${target}" pull --ff-only
+  else
+    run_cmd git clone --depth=1 "${repo_url}" "${target}"
+  fi
+}
+
+install_skill_sparse_checkout() {
+  local data_dir="$1"
+  local target_id="$2"
+  local repo_url="$3"
+  local sparse_dir="$4"
+  local skills_dir
+  skills_dir=$(skills_workspace_dir "${data_dir}")
+  local target="${skills_dir}/${target_id}"
+
+  run_cmd mkdir -p "${skills_dir}"
+  if [[ -d "${target}/.git" ]]; then
+    run_cmd git -C "${target}" pull --ff-only
+    return
+  fi
+  run_cmd git clone --depth=1 --filter=blob:none --sparse "${repo_url}" "${target}"
+  run_cmd git -C "${target}" sparse-checkout set "${sparse_dir}"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd bash -lc "shopt -s dotglob nullglob; mv '${target}/${sparse_dir}/'* '${target}/' 2>/dev/null || true; rm -rf '${target}/${sparse_dir}'"
+  else
+    if [[ -d "${target}/${sparse_dir}" ]]; then
+      shopt -s dotglob nullglob
+      mv "${target}/${sparse_dir}/"* "${target}/" 2>/dev/null || true
+      shopt -u dotglob nullglob
+      rm -rf "${target:?}/${sparse_dir}"
+    fi
+  fi
+}
+
+install_selected_skills() {
+  local data_dir="$1"
+  local selected
+  selected=$(normalize_skill_set "${2:-}")
+  [[ -n "${selected}" ]] || {
+    log_info "未选择 Skill，跳过安装"
+    return 0
+  }
+
+  local failed=0
+  local token
+  for token in ${selected}; do
+    local kind arg1 arg2
+    kind=$(catalog_field_for_id "skill" "${token}" "kind")
+    arg1=$(catalog_field_for_id "skill" "${token}" "arg1")
+    arg2=$(catalog_field_for_id "skill" "${token}" "arg2")
+    case "${kind}" in
+      git_clone)
+        if [[ -z "${arg1}" ]]; then
+          log_error "Skill 定义缺少仓库地址: ${token}"
+          failed=1
+        else
+          install_skill_git_clone "${data_dir}" "${token}" "${arg1}" || failed=1
+        fi
+        ;;
+      sparse_checkout)
+        if [[ -z "${arg1}" || -z "${arg2}" ]]; then
+          log_error "Skill 定义缺少 sparse 参数: ${token}"
+          failed=1
+        else
+          install_skill_sparse_checkout "${data_dir}" "${token}" "${arg1}" "${arg2}" || failed=1
+        fi
+        ;;
+      "")
+        log_error "未找到 Skill 定义: ${token}"
+        failed=1
+        ;;
+      *)
+        log_error "不支持的 Skill 安装类型: ${kind} (${token})"
+        failed=1
+        ;;
+    esac
+  done
+
+  [[ "${failed}" -eq 0 ]]
+}
+
 normalize_dep_list() {
   local raw="$*"
   raw="${raw//,/ }"
@@ -1573,9 +2385,263 @@ normalize_dep_list() {
   fi
 }
 
+token_in_list() {
+  local token="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "${item}" == "${token}" ]] && return 0
+  done
+  return 1
+}
+
+normalize_optional_list() {
+  local raw="$1"
+  shift
+  local allowed=("$@")
+
+  raw="${raw//,/ }"
+  raw=$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+
+  local out=""
+  local token
+  for token in ${raw}; do
+    if ! token_in_list "${token}" "${allowed[@]}"; then
+      continue
+    fi
+    case " ${out} " in
+      *" ${token} "*) ;;
+      *) out="${out}${out:+ }${token}" ;;
+    esac
+  done
+  echo "${out}"
+}
+
+append_catalog_line() {
+  local current="$1"
+  local line="$2"
+  if [[ -z "${current}" ]]; then
+    printf '%s\n' "${line}"
+  else
+    printf '%s\n%s\n' "${current}" "${line}"
+  fi
+}
+
+catalog_records_for_mode() {
+  local mode="$1"
+  if [[ "${mode}" == "software" ]]; then
+    printf '%s\n' "${OPTIONAL_SOFTWARE_CATALOG}"
+  else
+    printf '%s\n' "${OPTIONAL_SKILL_CATALOG}"
+  fi
+}
+
+catalog_record_for_id() {
+  local mode="$1"
+  local wanted_id="$2"
+  local line id label kind arg1 arg2 deps
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    IFS='|' read -r id label kind arg1 arg2 deps <<< "${line}"
+    if [[ "${id}" == "${wanted_id}" ]]; then
+      printf '%s\n' "${line}"
+      return 0
+    fi
+  done < <(catalog_records_for_mode "${mode}")
+  return 1
+}
+
+catalog_field_for_id() {
+  local mode="$1"
+  local id="$2"
+  local field="$3"
+  local line
+  line=$(catalog_record_for_id "${mode}" "${id}" || true)
+  [[ -n "${line}" ]] || {
+    printf '%s\n' ""
+    return 0
+  }
+
+  local rid label kind arg1 arg2 deps
+  IFS='|' read -r rid label kind arg1 arg2 deps <<< "${line}"
+  case "${field}" in
+    id) printf '%s\n' "${rid}" ;;
+    label) printf '%s\n' "${label}" ;;
+    kind) printf '%s\n' "${kind}" ;;
+    arg1) printf '%s\n' "${arg1}" ;;
+    arg2) printf '%s\n' "${arg2}" ;;
+    deps) printf '%s\n' "${deps}" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+catalog_ids_for_mode() {
+  local mode="$1"
+  local out=""
+  local line id label kind arg1 arg2 deps
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    IFS='|' read -r id label kind arg1 arg2 deps <<< "${line}"
+    [[ -z "${id}" ]] && continue
+    out="${out}${out:+ }${id}"
+  done < <(catalog_records_for_mode "${mode}")
+  printf '%s\n' "${out}"
+}
+
+load_optional_component_catalog() {
+  OPTIONAL_SOFTWARE_CATALOG=""
+  OPTIONAL_SKILL_CATALOG=""
+  OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"
+  OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"
+
+  if [[ ! -f "${OPTIONAL_COMPONENTS_FILE}" ]]; then
+    log_info "可选组件目录文件不存在，使用内置默认列表: ${OPTIONAL_COMPONENTS_FILE}"
+    return 0
+  fi
+
+  local line
+  while IFS= read -r line; do
+    line=$(sanitize_user_input "${line}")
+    line=$(trim_surrounding_spaces "${line}")
+    [[ -z "${line}" ]] && continue
+    [[ "${line}" =~ ^# ]] && continue
+
+    local mode id label kind arg1 arg2 deps
+    IFS='|' read -r mode id label kind arg1 arg2 deps <<< "${line}"
+    mode=$(trim_surrounding_spaces "${mode}")
+    id=$(trim_surrounding_spaces "${id}")
+    label=$(trim_surrounding_spaces "${label}")
+    kind=$(trim_surrounding_spaces "${kind}")
+    arg1=$(trim_surrounding_spaces "${arg1}")
+    arg2=$(trim_surrounding_spaces "${arg2}")
+    deps=$(trim_surrounding_spaces "${deps}")
+
+    [[ -n "${mode}" && -n "${id}" && -n "${label}" && -n "${kind}" ]] || continue
+    local normalized_line="${id}|${label}|${kind}|${arg1}|${arg2}|${deps}"
+
+    case "${mode}" in
+      software)
+        OPTIONAL_SOFTWARE_CATALOG=$(append_catalog_line "${OPTIONAL_SOFTWARE_CATALOG}" "${normalized_line}")
+        ;;
+      skill)
+        OPTIONAL_SKILL_CATALOG=$(append_catalog_line "${OPTIONAL_SKILL_CATALOG}" "${normalized_line}")
+        ;;
+    esac
+  done < "${OPTIONAL_COMPONENTS_FILE}"
+
+  local loaded_software loaded_skill
+  loaded_software=$(catalog_ids_for_mode "software")
+  loaded_skill=$(catalog_ids_for_mode "skill")
+  [[ -n "${loaded_software}" ]] && OPTIONAL_SOFTWARE_ALL="${loaded_software}"
+  [[ -n "${loaded_skill}" ]] && OPTIONAL_SKILL_ALL="${loaded_skill}"
+}
+
+normalize_software_set() {
+  normalize_optional_list "$*" ${OPTIONAL_SOFTWARE_ALL}
+}
+
+normalize_skill_set() {
+  normalize_optional_list "$*" ${OPTIONAL_SKILL_ALL}
+}
+
+optional_software_label() {
+  local token="$1"
+  local label
+  label=$(catalog_field_for_id "software" "${token}" "label")
+  if [[ -n "${label}" ]]; then
+    echo "${label}"
+  else
+    echo "${token}"
+  fi
+}
+
+optional_skill_label() {
+  local token="$1"
+  local label
+  label=$(catalog_field_for_id "skill" "${token}" "label")
+  if [[ -n "${label}" ]]; then
+    echo "${label}"
+  else
+    echo "${token}"
+  fi
+}
+
+optional_list_summary() {
+  local mode="$1"
+  shift
+  local raw="$*"
+  raw=$(echo "${raw}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  [[ -n "${raw}" ]] || {
+    echo "无"
+    return
+  }
+
+  local out=""
+  local token label
+  for token in ${raw}; do
+    if [[ "${mode}" == "software" ]]; then
+      label=$(optional_software_label "${token}")
+    else
+      label=$(optional_skill_label "${token}")
+    fi
+    out="${out}${out:+、}${label}"
+  done
+  echo "${out}"
+}
+
+software_set_summary() {
+  optional_list_summary "software" "$(normalize_software_set "$*")"
+}
+
+skill_set_summary() {
+  optional_list_summary "skill" "$(normalize_skill_set "$*")"
+}
+
+ensure_dep_set_for_software() {
+  local dep_set="$1"
+  local software_set
+  software_set=$(normalize_software_set "${2:-}")
+  local result
+  result=$(normalize_dep_list "${dep_set}")
+
+  local additional_deps=""
+  local token
+  for token in ${software_set}; do
+    local dep_tokens
+    dep_tokens=$(catalog_field_for_id "software" "${token}" "deps")
+    dep_tokens="${dep_tokens//,/ }"
+    dep_tokens=$(echo "${dep_tokens}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+    [[ -z "${dep_tokens}" || "${dep_tokens}" == "none" ]] && continue
+    additional_deps="${additional_deps}${additional_deps:+ }${dep_tokens}"
+  done
+
+  additional_deps=$(echo "${additional_deps}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  if [[ -n "${additional_deps}" ]]; then
+    local dep_token
+    for dep_token in ${additional_deps}; do
+      if ! dep_enabled "${result}" "${dep_token}"; then
+        result=$(normalize_dep_list "${result} ${dep_token}")
+        printf '[INFO] 已自动补充依赖: %s（因所选可选软件需要）\n' "${dep_token}" >&2
+      fi
+    done
+  fi
+
+  echo "${result}"
+}
+
 deps_profile_path() {
   local data_dir="$1"
   echo "${data_dir}/runtime/deps.profile"
+}
+
+software_profile_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/software.profile"
+}
+
+skill_profile_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/skills.profile"
 }
 
 persistence_profile_path() {
@@ -1707,6 +2773,60 @@ save_dep_profile() {
     return
   fi
   printf '%s\n' ${deps} > "${profile}"
+}
+
+load_software_profile() {
+  local data_dir="$1"
+  local profile
+  profile=$(software_profile_path "${data_dir}")
+  if [[ -f "${profile}" ]]; then
+    normalize_software_set "$(tr '\n' ' ' < "${profile}")"
+  else
+    echo ""
+  fi
+}
+
+save_software_profile() {
+  local data_dir="$1"
+  shift
+  local software
+  software=$(normalize_software_set "$*")
+  local profile
+  profile=$(software_profile_path "${data_dir}")
+  run_cmd mkdir -p "${data_dir}/runtime"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "软件档案将保存到: ${profile}"
+    log_info "软件档案内容: ${software:-<empty>}"
+    return
+  fi
+  printf '%s\n' ${software} > "${profile}"
+}
+
+load_skill_profile() {
+  local data_dir="$1"
+  local profile
+  profile=$(skill_profile_path "${data_dir}")
+  if [[ -f "${profile}" ]]; then
+    normalize_skill_set "$(tr '\n' ' ' < "${profile}")"
+  else
+    echo ""
+  fi
+}
+
+save_skill_profile() {
+  local data_dir="$1"
+  shift
+  local skills
+  skills=$(normalize_skill_set "$*")
+  local profile
+  profile=$(skill_profile_path "${data_dir}")
+  run_cmd mkdir -p "${data_dir}/runtime"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "Skill 档案将保存到: ${profile}"
+    log_info "Skill 档案内容: ${skills:-<empty>}"
+    return
+  fi
+  printf '%s\n' ${skills} > "${profile}"
 }
 
 load_persistence_choice() {
@@ -1900,17 +3020,50 @@ sync_user_bin_dir() {
     ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
   done
 }
-ensure_path_now /root/.local/bin /usr/local/go/bin /root/go/bin /usr/local/bin
+ensure_path_now /root/.local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin /usr/local/bin
 persist_path_dir /root/.local/bin
 persist_path_dir /usr/local/go/bin
 persist_path_dir /root/go/bin
+persist_path_dir /root/.cargo/bin
 [ -x /usr/local/go/bin/go ] && ln -sf /usr/local/go/bin/go /usr/local/bin/go || true
 [ -x /root/.local/bin/uv ] && ln -sf /root/.local/bin/uv /usr/local/bin/uv || true
+[ -x /root/.cargo/bin/cargo ] && ln -sf /root/.cargo/bin/cargo /usr/local/bin/cargo || true
+[ -x /root/.cargo/bin/rustc ] && ln -sf /root/.cargo/bin/rustc /usr/local/bin/rustc || true
 sync_user_bin_dir /root/.local/bin
 sync_user_bin_dir /root/go/bin
+sync_user_bin_dir /root/.cargo/bin
 true'
 
   run_cmd_brief "docker exec ${container_name} sh -lc <runtime-path-repair-script>" \
+    docker exec "${container_name}" sh -lc "${script}"
+}
+
+configure_npm_runtime_prefix() {
+  local container_name="$1"
+  local image="$2"
+  local script='
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[npm] npm not found, skip runtime prefix setup"
+  exit 0
+fi
+mkdir -p /root/.local/bin /root/.local/lib/node_modules
+npm config set prefix /root/.local >/dev/null 2>&1 || true
+prefix_now=$(npm config get prefix 2>/dev/null || true)
+echo "[npm] global prefix=${prefix_now}"
+if [ -d /root/.local/bin ] && [ -d /usr/local/bin ]; then
+  for f in /root/.local/bin/*; do
+    [ -f "$f" ] || continue
+    [ -x "$f" ] || continue
+    ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+  done
+fi
+true'
+
+  if ! is_openclaw_zh_image_ref "${image}"; then
+    return 0
+  fi
+
+  run_cmd_brief "docker exec ${container_name} sh -lc <npm-runtime-prefix-script>" \
     docker exec "${container_name}" sh -lc "${script}"
 }
 
@@ -1945,7 +3098,8 @@ build_dep_set_from_choices() {
   local npm_choice="$1"
   local uv_choice="$2"
   local go_choice="$3"
-  local extra_deps="$4"
+  local rust_choice="$4"
+  local extra_deps="$5"
   local deps=""
 
   if [[ "${npm_choice}" == "1" ]]; then
@@ -1956,6 +3110,9 @@ build_dep_set_from_choices() {
   fi
   if [[ "${go_choice}" == "1" ]]; then
     deps="${deps} go"
+  fi
+  if [[ "${rust_choice}" == "1" ]]; then
+    deps="${deps} rust"
   fi
   deps="${deps} ${extra_deps}"
   normalize_dep_list "${deps}"
@@ -2001,6 +3158,9 @@ has_effective() {
     npm)
       [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ]
       ;;
+    rust|cargo|rustc)
+      [ -x /root/.cargo/bin/cargo ] || [ -x /root/.cargo/bin/rustc ] || [ -x /usr/local/bin/cargo ] || [ -x /usr/local/bin/rustc ]
+      ;;
     python3)
       [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ]
       ;;
@@ -2008,6 +3168,33 @@ has_effective() {
       return 1
       ;;
   esac
+}
+python_has_pip() {
+  if has pip3; then
+    return 0
+  fi
+  if has python3 && python3 -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+python_can_create_venv() {
+  if ! has python3; then
+    return 1
+  fi
+  local tmpd
+  tmpd=$(mktemp -d /tmp/openclaw-runtime-venv-check.XXXXXX 2>/dev/null || true)
+  if [ -z "$tmpd" ]; then
+    python3 -m venv -h >/dev/null 2>&1
+    return $?
+  fi
+  local rc=0
+  python3 -m venv "$tmpd/probe" >/dev/null 2>&1 || rc=$?
+  rm -rf "$tmpd" >/dev/null 2>&1 || true
+  [ "$rc" -eq 0 ]
+}
+python_has_venv() {
+  python_can_create_venv
 }
 dep_status() {
   local cmd="$1"
@@ -2096,8 +3283,22 @@ fix_go_path() {
   sync_user_bin_dir /root/go/bin
 }
 
-# Best-effort PATH repair for "installed but not in PATH" cases (especially go/uv)
-ensure_path_now /root/.local/bin /usr/local/bin /usr/local/go/bin /root/go/bin
+fix_rust_path() {
+  ensure_path_now /root/.cargo/bin /usr/local/bin
+  persist_path_dir /root/.cargo/bin
+  if ! has cargo && [ -x /root/.cargo/bin/cargo ] && [ -d /usr/local/bin ]; then
+    ln -sf /root/.cargo/bin/cargo /usr/local/bin/cargo || true
+    ensure_path_now /usr/local/bin
+  fi
+  if ! has rustc && [ -x /root/.cargo/bin/rustc ] && [ -d /usr/local/bin ]; then
+    ln -sf /root/.cargo/bin/rustc /usr/local/bin/rustc || true
+    ensure_path_now /usr/local/bin
+  fi
+  sync_user_bin_dir /root/.cargo/bin
+}
+
+# Best-effort PATH repair for "installed but not in PATH" cases (especially go/uv/rust)
+ensure_path_now /root/.local/bin /usr/local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin
 
 is_mountpoint_path() {
   local p="$1"
@@ -2131,16 +3332,29 @@ fi
 
 need_node=0
 need_python=0
+need_python_pip=0
+need_python_venv=0
 need_uv=0
 need_go=0
+need_rust=0
 contains_dep npm && ! has_effective npm && need_node=1
 if ! has_effective python3 && (contains_dep python3 || contains_dep uv); then
   need_python=1
 fi
+if contains_dep python3 || contains_dep uv; then
+  if [ "$need_python" -eq 1 ]; then
+    need_python_pip=1
+    need_python_venv=1
+  else
+    python_has_pip || need_python_pip=1
+    python_has_venv || need_python_venv=1
+  fi
+fi
 contains_dep uv && ! has_effective uv && need_uv=1
 contains_dep go && ! has_effective go && need_go=1
+contains_dep rust && ! has_effective rust && need_rust=1
 
-if [ "$need_node" -eq 0 ] && [ "$need_python" -eq 0 ] && [ "$need_uv" -eq 0 ] && [ "$need_go" -eq 0 ]; then
+if [ "$need_node" -eq 0 ] && [ "$need_python" -eq 0 ] && [ "$need_python_pip" -eq 0 ] && [ "$need_python_venv" -eq 0 ] && [ "$need_uv" -eq 0 ] && [ "$need_go" -eq 0 ] && [ "$need_rust" -eq 0 ]; then
   echo "[deps] all required runtimes already installed"
 fi
 
@@ -2194,31 +3408,68 @@ install_base_deps() {
       apt-get update
       pkgs=""
       [ "$need_node" -eq 1 ] && pkgs="$pkgs nodejs npm"
-      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3 python3-pip"
+      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3"
+      [ "$need_python_pip" -eq 1 ] && pkgs="$pkgs python3-pip"
       [ -n "$pkgs" ] && apt-get install -y $pkgs
+      if [ "$need_python_venv" -eq 1 ]; then
+        apt-get install -y python3-venv || true
+        if has python3 && ! python_has_venv; then
+          py_minor="$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
+          if [ -n "$py_minor" ]; then
+            apt-get install -y "python${py_minor}-venv" || true
+          fi
+        fi
+      fi
       ;;
     apk)
       pkgs=""
       [ "$need_node" -eq 1 ] && pkgs="$pkgs nodejs npm"
-      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3 py3-pip"
+      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3"
+      [ "$need_python_pip" -eq 1 ] && pkgs="$pkgs py3-pip"
+      [ "$need_python_venv" -eq 1 ] && pkgs="$pkgs py3-virtualenv"
       [ -n "$pkgs" ] && apk add --no-cache $pkgs
       ;;
     dnf)
       pkgs=""
       [ "$need_node" -eq 1 ] && pkgs="$pkgs nodejs npm"
-      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3 python3-pip"
-      [ -n "$pkgs" ] && dnf install -y $pkgs
+      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3"
+      [ "$need_python_pip" -eq 1 ] && pkgs="$pkgs python3-pip"
+      if [ "$need_python_venv" -eq 1 ]; then
+        if [ -n "$pkgs" ]; then
+          dnf install -y $pkgs python3-virtualenv || dnf install -y $pkgs
+        else
+          dnf install -y python3-virtualenv || true
+        fi
+      elif [ -n "$pkgs" ]; then
+        dnf install -y $pkgs
+      fi
       ;;
     yum)
       pkgs=""
       [ "$need_node" -eq 1 ] && pkgs="$pkgs nodejs npm"
-      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3 python3-pip"
-      [ -n "$pkgs" ] && yum install -y $pkgs
+      [ "$need_python" -eq 1 ] && pkgs="$pkgs python3"
+      [ "$need_python_pip" -eq 1 ] && pkgs="$pkgs python3-pip"
+      if [ "$need_python_venv" -eq 1 ]; then
+        if [ -n "$pkgs" ]; then
+          yum install -y $pkgs python3-virtualenv || yum install -y $pkgs
+        else
+          yum install -y python3-virtualenv || true
+        fi
+      elif [ -n "$pkgs" ]; then
+        yum install -y $pkgs
+      fi
       ;;
   esac
+
+  if has python3 && [ "$need_python_pip" -eq 1 ] && ! python_has_pip; then
+    python3 -m ensurepip --upgrade || true
+  fi
+  if has python3 && [ "$need_python_venv" -eq 1 ] && ! python_has_venv; then
+    python3 -m ensurepip --upgrade || true
+  fi
 }
 
-if [ "$need_node" -eq 1 ] || [ "$need_python" -eq 1 ]; then
+if [ "$need_node" -eq 1 ] || [ "$need_python" -eq 1 ] || [ "$need_python_pip" -eq 1 ] || [ "$need_python_venv" -eq 1 ]; then
   install_base_deps
 fi
 
@@ -2332,9 +3583,57 @@ if [ "$need_go" -eq 1 ]; then
   fi
 fi
 
+install_rust_with_rustup() {
+  if has curl; then
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+    return $?
+  fi
+  if has wget; then
+    wget -qO- https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+    return $?
+  fi
+  return 1
+}
+
+if [ "$need_rust" -eq 1 ]; then
+  rust_ok=0
+  if has rustc && has cargo; then
+    rust_ok=1
+  fi
+
+  if [ "$rust_ok" -eq 0 ]; then
+    echo "[deps] try installing rust via rustup"
+    if install_rust_with_rustup; then
+      fix_rust_path
+      has rustc && has cargo && rust_ok=1
+    fi
+  fi
+
+  if [ "$rust_ok" -eq 0 ] && [ -n "$pm" ]; then
+    echo "[deps] fallback to package manager for rust"
+    case "$pm" in
+      apt)
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y rustc cargo
+        ;;
+      apk)
+        apk add --no-cache rust cargo
+        ;;
+      dnf)
+        dnf install -y rust cargo
+        ;;
+      yum)
+        yum install -y rust cargo
+        ;;
+    esac
+    fix_rust_path
+  fi
+fi
+
 for dep in $DEPS; do
   case "$dep" in
-    npm|python3|uv|go) ;;
+    npm|python3|uv|go|rust) ;;
     *)
       if [ "$MODE" = "install" ] && ! has "$dep" && [ -n "$pm" ]; then
         echo "[deps] try installing custom command via package manager: $dep"
@@ -2355,8 +3654,10 @@ done
 
 fix_uv_path
 fix_go_path
+fix_rust_path
 sync_user_bin_dir /root/.local/bin
 sync_user_bin_dir /root/go/bin
+sync_user_bin_dir /root/.cargo/bin
 
 echo "[deps] final status:"
 for cmd in $DEPS; do
@@ -2470,6 +3771,45 @@ detect_existing_image() {
   else
     printf '%s\n' "${fallback}"
   fi
+}
+
+image_source_kind() {
+  local image="$1"
+  if [[ "${image}" == *"openclaw-zh"* ]]; then
+    echo "chinese"
+  elif [[ "${image}" == *"openclaw"* ]]; then
+    echo "official"
+  else
+    echo "unknown"
+  fi
+}
+
+prepare_source_switch_transition() {
+  local data_dir="$1"
+  local from_image="$2"
+  local to_image="$3"
+  local from_source to_source
+  from_source=$(image_source_kind "${from_image}")
+  to_source=$(image_source_kind "${to_image}")
+
+  if [[ "${from_source}" == "${to_source}" || "${from_source}" == "unknown" || "${to_source}" == "unknown" ]]; then
+    return 0
+  fi
+
+  log_info "[source-switch] 检测到版本源切换: ${from_source} -> ${to_source}"
+  if [[ -f "${data_dir}/openclaw.json" ]]; then
+    local backup_file="${data_dir}/openclaw.json.bak.$(date +%Y%m%d%H%M%S)"
+    run_cmd cp "${data_dir}/openclaw.json" "${backup_file}"
+  fi
+
+  if [[ "${to_source}" == "official" ]]; then
+    run_cmd chmod -R g+rw "${data_dir}" || true
+    log_info "[source-switch] 已执行权限兼容修正（official 方向）"
+  else
+    run_cmd chown -R "$(id -u):$(id -g)" "${data_dir}" || true
+    log_info "[source-switch] 已执行权限兼容修正（chinese 方向）"
+  fi
+  return 0
 }
 
 container_path_exists() {
@@ -2635,7 +3975,7 @@ detect_persist_choice_from_container() {
   local default_value="$3"
 
   if [[ "${target}" == "bin" ]]; then
-    if has_mount_destination "${name}" "/root/.local/bin" || has_mount_destination "${name}" "/root/go/bin"; then
+    if has_mount_destination "${name}" "/root/.local/bin" || has_mount_destination "${name}" "/root/go/bin" || has_mount_destination "${name}" "/root/.cargo/bin"; then
       echo "1"
       return
     fi
@@ -2648,6 +3988,7 @@ detect_persist_choice_from_container() {
       has_mount_destination "${name}" "/root/.local/share/uv" || \
       has_mount_destination "${name}" "/root/.local/pipx" || \
       has_mount_destination "${name}" "/root/.local/share/pipx" || \
+      has_mount_destination "${name}" "/root/.rustup" || \
       has_mount_destination "${name}" "/root/.config" || \
       has_mount_destination "${name}" "/root/.ssh" || \
       has_mount_destination "${name}" "/root/.gitconfig" || \
@@ -2670,7 +4011,7 @@ detect_persist_choice_from_container() {
   fi
 
   if [[ "${target}" == "cache" ]]; then
-    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod"; then
+    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod" || has_mount_destination "${name}" "/root/.cargo/registry" || has_mount_destination "${name}" "/root/.cargo/git"; then
       echo "1"
       return
     fi
@@ -2700,7 +4041,7 @@ detect_installed_deps_in_container() {
 
   local detected
   detected=$(docker exec "${name}" sh -lc '
-for c in npm uv go python3; do
+for c in npm uv go rust python3; do
   if command -v "$c" >/dev/null 2>&1; then
     printf "%s " "$c"
     continue
@@ -2714,6 +4055,9 @@ for c in npm uv go python3; do
       ;;
     npm)
       [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ] && printf "%s " "$c"
+      ;;
+    rust)
+      [ -x /root/.cargo/bin/cargo ] || [ -x /root/.cargo/bin/rustc ] || [ -x /usr/local/bin/cargo ] || [ -x /usr/local/bin/rustc ] && printf "%s " "$c"
       ;;
     python3)
       [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ] && printf "%s " "$c"
@@ -2743,7 +4087,7 @@ print_upgrade_discovery_summary() {
     deps_text=$(detect_installed_deps_in_container "${name}")
     [[ -z "${deps_text}" ]] && deps_text="未检测到"
 
-    if has_mount_destination "${name}" "/root/.local/bin" || has_mount_destination "${name}" "/root/go/bin"; then
+    if has_mount_destination "${name}" "/root/.local/bin" || has_mount_destination "${name}" "/root/go/bin" || has_mount_destination "${name}" "/root/.cargo/bin"; then
       bin_mounted="是"
     fi
 
@@ -2751,6 +4095,7 @@ print_upgrade_discovery_summary() {
       has_mount_destination "${name}" "/root/.local/share/uv" || \
       has_mount_destination "${name}" "/root/.local/pipx" || \
       has_mount_destination "${name}" "/root/.local/share/pipx" || \
+      has_mount_destination "${name}" "/root/.rustup" || \
       has_mount_destination "${name}" "/usr/local/lib/node_modules" || \
       has_mount_destination "${name}" "/root/.local/lib" || \
       has_mount_destination "${name}" "/root/.config" || \
@@ -2781,7 +4126,7 @@ print_upgrade_discovery_summary() {
     if has_mount_destination "${name}" "/etc/apt/sources.list.d" || has_mount_destination "${name}" "/etc/apt/keyrings"; then
       apt_cfg_mounted="是"
     fi
-    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod"; then
+    if has_mount_destination "${name}" "/root/.npm" || has_mount_destination "${name}" "/root/go/pkg/mod" || has_mount_destination "${name}" "/root/.cargo/registry" || has_mount_destination "${name}" "/root/.cargo/git"; then
       cache_mounted="是"
     fi
   fi
@@ -2793,18 +4138,21 @@ print_upgrade_discovery_summary() {
   echo "runtime 目录存在: ${runtime_dir_text} (${data_dir}/runtime)"
   echo "已检测依赖: ${deps_text}"
   echo "当前持久化挂载: bin=${bin_mounted}, env=${env_mounted}"
-  echo "扩展环境挂载: npm全局(node_modules)=${node_mod_mounted}, pip用户库(/root/.local/lib)=${py_user_lib_mounted}, 授权配置(.config/.ssh/.gitconfig/.docker/.aws/.kube/.netrc/.npmrc/.pypirc)=${auth_cfg_mounted}, APT源Key(${apt_cfg_mounted}), 缓存(.npm/go mod)=${cache_mounted}"
+  echo "扩展环境挂载: npm全局(node_modules)=${node_mod_mounted}, pip用户库(/root/.local/lib)=${py_user_lib_mounted}, 授权配置(.config/.ssh/.gitconfig/.docker/.aws/.kube/.netrc/.npmrc/.pypirc)=${auth_cfg_mounted}, APT源Key(${apt_cfg_mounted}), 缓存(.npm/go mod/cargo)=${cache_mounted}"
 
   local -a hints=()
   if [[ "${exists_text}" == "是" ]]; then
     if dep_enabled "${deps_text}" "go" && [[ "${env_mounted}" != "是" ]]; then
       hints+=("检测到 go 已安装但 env 未持久化，建议在本次升级开启 env。")
     fi
+    if dep_enabled "${deps_text}" "rust" && [[ "${bin_mounted}" != "是" || "${env_mounted}" != "是" ]]; then
+      hints+=("检测到 rust 已安装，建议同时开启 bin/env（持久化 /root/.cargo/bin 与 /root/.rustup）。")
+    fi
     if dep_enabled "${deps_text}" "uv" && [[ "${bin_mounted}" != "是" && "${env_mounted}" != "是" ]]; then
       hints+=("检测到 uv 已安装但未持久化，建议在本次升级开启 bin/env。")
     fi
     if dep_enabled "${deps_text}" "npm" && [[ "${node_mod_mounted}" != "是" ]]; then
-      hints+=("检测到 npm 可用，若依赖 npm -g 包建议开启 env（持久化 /usr/local/lib/node_modules）。")
+      hints+=("检测到 npm 可用，若依赖 npm -g 包建议开启 env（官方镜像走 /usr/local/lib/node_modules，zh 镜像走 /root/.local/lib）。")
     fi
     if dep_enabled "${deps_text}" "python3" && [[ "${py_user_lib_mounted}" != "是" ]]; then
       hints+=("检测到 python3 可用，若依赖 pip --user 包建议开启 env（持久化 /root/.local/lib）。")
@@ -2816,7 +4164,7 @@ print_upgrade_discovery_summary() {
       hints+=("若依赖第三方 apt 源或 key，建议开启 APT源Key 持久化（/etc/apt/sources.list.d 与 /etc/apt/keyrings）。")
     fi
     if [[ "${cache_mounted}" != "是" ]]; then
-      hints+=("若希望减少 npm/go 二次下载时间，可开启缓存持久化（/root/.npm 与 /root/go/pkg/mod）。")
+      hints+=("若希望减少 npm/go/rust 二次下载时间，可开启缓存持久化（/root/.npm、/root/go/pkg/mod、/root/.cargo/{registry,git}）。")
     fi
   fi
 
@@ -2967,12 +4315,14 @@ prompt_dep_set() {
   local npm_default="2"
   local uv_default="2"
   local go_default="2"
+  local rust_default="2"
 
   dep_enabled "${normalized_base}" "npm" && npm_default="1"
   dep_enabled "${normalized_base}" "uv" && uv_default="1"
   dep_enabled "${normalized_base}" "go" && go_default="1"
+  dep_enabled "${normalized_base}" "rust" && rust_default="1"
 
-  echo "依赖选择（默认 npm+uv，go 可选）:" >&2
+  echo "依赖选择（默认 npm+uv，go/rust 可选）:" >&2
   echo "是否包含 npm:" >&2
   echo "  1) 是" >&2
   echo "  2) 否" >&2
@@ -2991,10 +4341,16 @@ prompt_dep_set() {
   local go_choice
   go_choice=$(read_choice_default "请选择" "${go_default}")
 
+  echo "是否包含 rust:" >&2
+  echo "  1) 是" >&2
+  echo "  2) 否" >&2
+  local rust_choice
+  rust_choice=$(read_choice_default "请选择" "${rust_default}")
+
   local extra_deps
   extra_deps=$(read_with_default "额外依赖命令（逗号分隔，可留空）" "")
 
-  build_dep_set_from_choices "${npm_choice}" "${uv_choice}" "${go_choice}" "${extra_deps}"
+  build_dep_set_from_choices "${npm_choice}" "${uv_choice}" "${go_choice}" "${rust_choice}" "${extra_deps}"
 }
 
 value_or_unset() {
@@ -3136,6 +4492,16 @@ feature_group_summary() {
   fi
 }
 
+software_group_summary() {
+  local software_set="$1"
+  echo "软件=$(software_set_summary "${software_set}")"
+}
+
+skill_group_summary() {
+  local skill_set="$1"
+  echo "Skills=$(skill_set_summary "${skill_set}")"
+}
+
 auth_group_summary() {
   local token_mode="$1"
   local token_manual="$2"
@@ -3148,7 +4514,7 @@ deps_summary_line() {
     echo "未配置"
     return
   fi
-  echo "npm=$(dep_choice_label "${dep_set}" "npm"), uv=$(dep_choice_label "${dep_set}" "uv"), go=$(dep_choice_label "${dep_set}" "go")"
+  echo "npm=$(dep_choice_label "${dep_set}" "npm"), uv=$(dep_choice_label "${dep_set}" "uv"), go=$(dep_choice_label "${dep_set}" "go"), rust=$(dep_choice_label "${dep_set}" "rust"), python3=$(dep_choice_label "${dep_set}" "python3")"
 }
 
 detect_access_host() {
@@ -3243,19 +4609,24 @@ runtime_persist_paths_desc() {
   local env_choice="$3"
   local apt_cfg_choice="${4:-${DEFAULT_ENABLE_APT_CONFIG_PERSIST}}"
   local cache_choice="${5:-${DEFAULT_ENABLE_CACHE_PERSIST}}"
+  local image="${6:-}"
   local lines=()
 
   if [[ "${bin_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/root-local-bin")
     lines+=("${data_dir}/runtime/root-go-bin")
+    lines+=("${data_dir}/runtime/root-cargo-bin")
   fi
   if [[ "${env_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/usr-local-go")
-    lines+=("${data_dir}/runtime/usr-local-lib-node-modules")
+    if should_persist_node_modules_mount "${image}"; then
+      lines+=("${data_dir}/runtime/usr-local-lib-node-modules")
+    fi
     lines+=("${data_dir}/runtime/root-local-lib")
     lines+=("${data_dir}/runtime/root-local-share-uv")
     lines+=("${data_dir}/runtime/root-local-pipx")
     lines+=("${data_dir}/runtime/root-local-share-pipx")
+    lines+=("${data_dir}/runtime/root-rustup")
     lines+=("${data_dir}/runtime/root-config")
     lines+=("${data_dir}/runtime/root-ssh")
     lines+=("${data_dir}/runtime/root-gitconfig")
@@ -3273,6 +4644,8 @@ runtime_persist_paths_desc() {
   if [[ "${cache_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/root-npm-cache")
     lines+=("${data_dir}/runtime/root-go-pkg-mod")
+    lines+=("${data_dir}/runtime/root-cargo-registry")
+    lines+=("${data_dir}/runtime/root-cargo-git")
   fi
   if [[ "${#lines[@]}" -eq 0 ]]; then
     echo "未启用"
@@ -3324,6 +4697,11 @@ status() {
       ;;
     npm)
       if [ -x /usr/bin/npm ] || [ -x /usr/local/bin/npm ]; then
+        printf "%s(PATH需修复) " "$c"
+      fi
+      ;;
+    rust)
+      if [ -x /root/.cargo/bin/cargo ] || [ -x /root/.cargo/bin/rustc ] || [ -x /usr/local/bin/cargo ] || [ -x /usr/local/bin/rustc ]; then
         printf "%s(PATH需修复) " "$c"
       fi
       ;;
@@ -3380,6 +4758,17 @@ print_human_summary() {
     access_url="${access_url}?token=${token}"
   fi
 
+  local installed_software_set software_summary skill_summary
+  installed_software_set=$(load_software_profile "${data_dir}")
+  software_summary=$(software_set_summary "${installed_software_set}")
+  skill_summary=$(skill_set_summary "$(load_skill_profile "${data_dir}")")
+  local easyclaw_mapping easyclaw_host_port
+  easyclaw_mapping=$(detect_easyclaw_web_mapping "${extra_ports}" || true)
+  easyclaw_host_port="${EASYCLAW_DEFAULT_WEB_PORT}"
+  if [[ -n "${easyclaw_mapping}" ]]; then
+    easyclaw_host_port="${easyclaw_mapping%%:*}"
+  fi
+
   printf '\n===============================\n'
   if [[ "${action}" == "install" ]]; then
     echo "安装结果"
@@ -3401,6 +4790,8 @@ print_human_summary() {
   echo "持久化目录：${data_dir}"
   echo "运行环境持久化目录：${runtime_paths}"
   echo "已安装运行环境：${deps_installed}"
+  echo "可选软件：${software_summary}"
+  echo "已安装 Skills：${skill_summary}"
   echo "网络绑定：$(gateway_bind_desc "${gateway_bind}")"
   echo "扩展端口映射：$(value_or_unset "${extra_ports}")"
   if [[ -n "${token}" ]]; then
@@ -3417,7 +4808,21 @@ print_human_summary() {
   echo "EasyClaw 管理工具："
   echo "docker exec -it ${container_name} easyclaw tui"
   echo "docker exec -it ${container_name} easyclaw web --port ${EASYCLAW_DEFAULT_WEB_PORT}"
-  echo "若已启动 Web UI，可访问：http://Your Host IP:${EASYCLAW_DEFAULT_WEB_PORT}/"
+  echo "若已启动 Web UI，可访问：http://Your Host IP:${easyclaw_host_port}/"
+  if token_in_list "claudecodeui" ${installed_software_set}; then
+    local claudecodeui_mapping claudecodeui_host_port
+    claudecodeui_mapping=$(detect_claudecodeui_reserved_mapping "${extra_ports}" || true)
+    claudecodeui_host_port=""
+    if [[ -n "${claudecodeui_mapping}" ]]; then
+      claudecodeui_host_port="${claudecodeui_mapping%%:*}"
+    fi
+    echo
+    echo "ClaudeCodeUI + TaskMaster："
+    echo "docker exec -it ${container_name} claudecodeui-start"
+    if [[ -n "${claudecodeui_host_port}" ]]; then
+      echo "若已启动 CloudCLI UI，可访问：http://Your Host IP:${claudecodeui_host_port}/"
+    fi
+  fi
   echo
   echo "后续可使用本脚本进行更新检查并升级程序"
   echo "持久化信息在升级后会继续保留"
@@ -3440,6 +4845,22 @@ execute_install_plan() {
   local deps_install_choice="${13}"
   local target_deps="${14}"
   local extra_ports="${15:-}"
+  local software_set="${16:-}"
+  local skill_set="${17:-}"
+
+  software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(normalize_skill_set "${skill_set}")
+  if [[ -n "${software_set}" && "${deps_install_choice}" != "1" ]]; then
+    log_info "检测到已选择可选软件，已自动开启依赖补齐流程"
+    deps_install_choice="1"
+  fi
+  target_deps=$(ensure_dep_set_for_software "${target_deps}" "${software_set}")
+  if token_in_list "easyclaw" ${software_set}; then
+    extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+  if token_in_list "claudecodeui" ${software_set}; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
 
   if ! run_preflight_checks "install" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
     log_error "preflight 未通过，请修复后重试"
@@ -3471,12 +4892,17 @@ execute_install_plan() {
   fi
   run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
   save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_software_profile "${data_dir}" "${software_set}"
+  save_skill_profile "${data_dir}" "${skill_set}"
   if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
     install_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
   fi
   if [[ "${env_persist_choice}" == "1" ]]; then
     if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
       install_nonfatal_issues+=("授权目录权限修正失败")
+    fi
+    if ! run_optional_step "NPM 全局前缀持久化配置" configure_npm_runtime_prefix "${name}" "${image}"; then
+      install_nonfatal_issues+=("NPM 全局前缀持久化配置失败")
     fi
   fi
   if [[ "${easy_choice}" == "1" ]]; then
@@ -3491,13 +4917,23 @@ execute_install_plan() {
       install_nonfatal_issues+=("容器依赖补齐失败")
     fi
   fi
+  if [[ -n "${software_set}" ]]; then
+    if ! run_optional_step "可选软件安装" install_selected_software "${name}" "${data_dir}" "${software_set}" "${host_port}" "${container_port}" "${extra_ports}"; then
+      install_nonfatal_issues+=("可选软件安装失败")
+    fi
+  fi
+  if [[ -n "${skill_set}" ]]; then
+    if ! run_optional_step "Skill 安装" install_selected_skills "${data_dir}" "${skill_set}"; then
+      install_nonfatal_issues+=("Skill 安装失败")
+    fi
+  fi
 
   printf 'TOKEN=%s\n' "${token}"
   printf 'URL=http://<server-ip>:%s/?token=%s\n' "${host_port}" "${token}"
   local install_version install_status_text install_runtime_paths install_deps_installed
   install_version=$(detect_openclaw_version "${name}")
   install_status_text=$(get_container_status_text "${name}")
-  install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  install_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${image}")
   install_deps_installed=$(detect_installed_deps_summary "${name}" "${target_deps}")
 
   local install_status="success"
@@ -3512,6 +4948,7 @@ execute_install_plan() {
   fi
   write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
   print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
+  write_deployment_info "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "${extra_ports}" || true
 }
 
 execute_upgrade_plan() {
@@ -3528,12 +4965,27 @@ execute_upgrade_plan() {
   local deps_repair_choice="${11}"
   local upgrade_dep_set="${12}"
   local extra_ports="${13:-}"
+  local software_set
+
+  software_set=$(load_software_profile "${data_dir}")
+  software_set=$(normalize_software_set "${software_set}")
+  if [[ -n "${software_set}" ]]; then
+    log_info "检测到已保存的软件档案，升级后将自动保活: $(software_set_summary "${software_set}")"
+    upgrade_dep_set=$(ensure_dep_set_for_software "${upgrade_dep_set}" "${software_set}")
+    if [[ "${deps_repair_choice}" != "1" ]]; then
+      log_info "已自动开启升级后依赖补齐流程"
+      deps_repair_choice="1"
+    fi
+  fi
 
   if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
     return 1
   fi
   if should_enable_easyclaw_web_port "${easyclaw_upgrade}" "${name}" "${data_dir}"; then
     extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+  if should_enable_claudecodeui_reserved_port "0" "${name}" "${data_dir}"; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
   fi
 
   if ! run_preflight_checks "upgrade" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
@@ -3550,10 +5002,15 @@ execute_upgrade_plan() {
   fi
 
   local -a upgrade_nonfatal_issues=()
+  local current_image
+  current_image=$(detect_existing_image "${name}" "")
+  if ! run_optional_step "版本源切换兼容修正" prepare_source_switch_transition "${data_dir}" "${current_image}" "${image}"; then
+    upgrade_nonfatal_issues+=("版本源切换兼容修正失败")
+  fi
   local current_gateway_bind
   current_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
 
-  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
+  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${image}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
     log_error "升级前 runtime 数据迁移失败；为避免数据丢失，已中止本次升级"
     return 1
   fi
@@ -3587,6 +5044,9 @@ execute_upgrade_plan() {
     if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
       upgrade_nonfatal_issues+=("授权目录权限修正失败")
     fi
+    if ! run_optional_step "NPM 全局前缀持久化配置" configure_npm_runtime_prefix "${name}" "${image}"; then
+      upgrade_nonfatal_issues+=("NPM 全局前缀持久化配置失败")
+    fi
   fi
   if [[ "${env_persist_choice}" == "1" ]]; then
     if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
@@ -3610,6 +5070,11 @@ execute_upgrade_plan() {
       upgrade_nonfatal_issues+=("升级后依赖补齐失败")
     fi
   fi
+  if [[ -n "${software_set}" ]]; then
+    if ! run_optional_step "升级后可选软件保活安装" install_selected_software "${name}" "${data_dir}" "${software_set}" "${host_port}" "${container_port}" "${extra_ports}"; then
+      upgrade_nonfatal_issues+=("升级后可选软件保活安装失败")
+    fi
+  fi
 
   if [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]]; then
     log_error "以下可选步骤失败（升级主流程已完成）:"
@@ -3626,11 +5091,12 @@ execute_upgrade_plan() {
   local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
   upgrade_version=$(detect_openclaw_version "${name}")
   upgrade_status_text=$(get_container_status_text "${name}")
-  upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  upgrade_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${image}")
   upgrade_deps_installed=$(detect_installed_deps_summary "${name}" "${upgrade_dep_set}")
   upgrade_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
   upgrade_token=$(detect_token_from_config "${data_dir}")
   print_human_summary "upgrade" "${name}" "${upgrade_version}" "${upgrade_status_text}" "${data_dir}" "${upgrade_runtime_paths}" "${upgrade_deps_installed}" "${upgrade_gateway_bind}" "${upgrade_token}" "${host_port}" "${extra_ports}"
+  write_deployment_info "upgrade" "${upgrade_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${upgrade_token}" "${extra_ports}" || true
 }
 
 execute_rebuild_plan() {
@@ -3646,11 +5112,26 @@ execute_rebuild_plan() {
   local deps_repair_choice="${10}"
   local rebuild_dep_set="${11}"
   local extra_ports="${12:-}"
+  local software_set
+
+  software_set=$(load_software_profile "${data_dir}")
+  software_set=$(normalize_software_set "${software_set}")
+  if [[ -n "${software_set}" ]]; then
+    log_info "检测到已保存的软件档案，重建后将自动保活: $(software_set_summary "${software_set}")"
+    rebuild_dep_set=$(ensure_dep_set_for_software "${rebuild_dep_set}" "${software_set}")
+    if [[ "${deps_repair_choice}" != "1" ]]; then
+      log_info "已自动开启重建后依赖补齐流程"
+      deps_repair_choice="1"
+    fi
+  fi
 
   if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
     return 1
   fi
   extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  if should_enable_claudecodeui_reserved_port "0" "${name}" "${data_dir}"; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
 
   if ! run_preflight_checks "rebuild" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}"; then
     log_error "preflight 未通过，请修复后重试"
@@ -3666,9 +5147,14 @@ execute_rebuild_plan() {
   fi
 
   local -a rebuild_nonfatal_issues=()
+  local current_image
+  current_image=$(detect_existing_image "${name}" "")
+  if ! run_optional_step "版本源切换兼容修正" prepare_source_switch_transition "${data_dir}" "${current_image}" "${image}"; then
+    rebuild_nonfatal_issues+=("版本源切换兼容修正失败")
+  fi
   local current_gateway_bind
   current_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
-  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
+  if ! pre_upgrade_migrate_runtime_data "${name}" "${data_dir}" "${image}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"; then
     log_error "重建前 runtime 数据迁移失败；为避免数据丢失，已中止本次重建"
     return 1
   fi
@@ -3704,6 +5190,9 @@ execute_rebuild_plan() {
     if ! run_optional_step "授权目录权限修正" repair_persisted_auth_permissions "${name}"; then
       rebuild_nonfatal_issues+=("授权目录权限修正失败")
     fi
+    if ! run_optional_step "NPM 全局前缀持久化配置" configure_npm_runtime_prefix "${name}" "${image}"; then
+      rebuild_nonfatal_issues+=("NPM 全局前缀持久化配置失败")
+    fi
     if ! run_optional_step "APT 手工包回放安装" restore_apt_manual_packages "${name}" "${data_dir}"; then
       rebuild_nonfatal_issues+=("APT 手工包回放安装失败")
     fi
@@ -3714,6 +5203,11 @@ execute_rebuild_plan() {
       run_optional_step "依赖档案保存" save_dep_profile "${data_dir}" "${rebuild_dep_set}" || true
     else
       rebuild_nonfatal_issues+=("重建后依赖补齐失败")
+    fi
+  fi
+  if [[ -n "${software_set}" ]]; then
+    if ! run_optional_step "重建后可选软件保活安装" install_selected_software "${name}" "${data_dir}" "${software_set}" "${host_port}" "${container_port}" "${extra_ports}"; then
+      rebuild_nonfatal_issues+=("重建后可选软件保活安装失败")
     fi
   fi
 
@@ -3737,11 +5231,12 @@ execute_rebuild_plan() {
   local rebuild_version rebuild_status_text rebuild_runtime_paths rebuild_deps_installed rebuild_gateway_bind rebuild_token
   rebuild_version=$(detect_openclaw_version "${name}")
   rebuild_status_text=$(get_container_status_text "${name}")
-  rebuild_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}")
+  rebuild_runtime_paths=$(runtime_persist_paths_desc "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${image}")
   rebuild_deps_installed=$(detect_installed_deps_summary "${name}" "${rebuild_dep_set}")
   rebuild_gateway_bind=$(detect_gateway_bind "${name}" "${data_dir}" "lan")
   rebuild_token=$(detect_token_from_config "${data_dir}")
   print_human_summary "rebuild" "${name}" "${rebuild_version}" "${rebuild_status_text}" "${data_dir}" "${rebuild_runtime_paths}" "${rebuild_deps_installed}" "${rebuild_gateway_bind}" "${rebuild_token}" "${host_port}" "${extra_ports}"
+  write_deployment_info "rebuild" "${rebuild_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${rebuild_token}" "${extra_ports}" || true
 }
 
 load_simple_config_file() {
@@ -3776,6 +5271,9 @@ load_simple_config_file() {
       OFFICIAL_TAG) OFFICIAL_TAG_CFG="${value}" ;;
       DEPS_INSTALL_CHOICE) DEPS_INSTALL_CHOICE_CFG="${value}" ;;
       TARGET_DEPS) TARGET_DEPS_CFG="${value}" ;;
+      SOFTWARE_SET) SOFTWARE_SET_CFG="${value}" ;;
+      SKILL_SET) SKILL_SET_CFG="${value}" ;;
+      NATIVE_PREFIX) NATIVE_PREFIX_CFG="${value}" ;;
       EXTRA_PORTS) EXTRA_PORTS_CFG="${value}" ;;
     esac
   done < "${file_path}"
@@ -3800,6 +5298,8 @@ run_install_from_config_file() {
   OFFICIAL_TAG_CFG=""
   DEPS_INSTALL_CHOICE_CFG="1"
   TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
+  SOFTWARE_SET_CFG=""
+  SKILL_SET_CFG=""
   EXTRA_PORTS_CFG=""
 
   load_simple_config_file "${CONFIG_FILE}"
@@ -3818,6 +5318,9 @@ run_install_from_config_file() {
   }
 
   local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local software_set skill_set
+  software_set=$(normalize_software_set "${SOFTWARE_SET_CFG}")
+  skill_set=$(normalize_skill_set "${SKILL_SET_CFG}")
   local token
   if [[ "${TOKEN_MODE_CFG}" == "2" ]]; then
     token="${TOKEN_MANUAL_CFG}"
@@ -3836,6 +5339,13 @@ run_install_from_config_file() {
   if should_enable_easyclaw_web_port "${EASY_CHOICE_CFG}" "" "${data_dir}"; then
     extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${extra_ports}")
   fi
+  if token_in_list "claudecodeui" ${software_set}; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${extra_ports}")
+  fi
+  if [[ -n "${software_set}" && "${DEPS_INSTALL_CHOICE_CFG}" != "1" ]]; then
+    DEPS_INSTALL_CHOICE_CFG="1"
+  fi
+  TARGET_DEPS_CFG=$(ensure_dep_set_for_software "${TARGET_DEPS_CFG}" "${software_set}")
   local gateway_bind
   gateway_bind=$(bind_choice_label "${BIND_CHOICE_CFG}")
 
@@ -3848,15 +5358,17 @@ run_install_from_config_file() {
   echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
   echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
-  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
   echo "EasyClaw: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
+  echo "可选软件: $(software_set_summary "${software_set}")"
+  echo "Skills: $(skill_set_summary "${skill_set}")"
   echo "依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
   fi
   echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
 
-  execute_install_plan "${image}" "${NAME_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${gateway_bind}" "${token}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${extra_ports}"
+  execute_install_plan "${image}" "${NAME_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${gateway_bind}" "${token}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${extra_ports}" "${software_set}" "${skill_set}"
 }
 
 run_upgrade_from_config_file() {
@@ -3893,6 +5405,13 @@ run_upgrade_from_config_file() {
   }
 
   local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local preview_extra_ports="${EXTRA_PORTS_CFG}"
+  if should_enable_easyclaw_web_port "${EASY_CHOICE_CFG}" "${NAME_CFG}" "${data_dir}"; then
+    preview_extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${preview_extra_ports}")
+  fi
+  if should_enable_claudecodeui_reserved_port "0" "${NAME_CFG}" "${data_dir}"; then
+    preview_extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${preview_extra_ports}")
+  fi
   printf '\n--- 执行清单（确认前） ---\n'
   echo "容器名: ${NAME_CFG}"
   echo "目标镜像: ${image}"
@@ -3901,15 +5420,15 @@ run_upgrade_from_config_file() {
   echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
   echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
-  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
   echo "EasyClaw 检查升级: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
   echo "升级后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
   fi
-  echo "扩展端口映射: $(value_or_unset "${EXTRA_PORTS_CFG}")"
+  echo "扩展端口映射: $(value_or_unset "${preview_extra_ports}")"
 
-  execute_upgrade_plan "${NAME_CFG}" "${image}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${EXTRA_PORTS_CFG}"
+  execute_upgrade_plan "${NAME_CFG}" "${image}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}"
 }
 
 run_rebuild_from_config_file() {
@@ -3938,6 +5457,11 @@ run_rebuild_from_config_file() {
   }
 
   local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local preview_extra_ports="${EXTRA_PORTS_CFG}"
+  preview_extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${preview_extra_ports}")
+  if should_enable_claudecodeui_reserved_port "0" "${NAME_CFG}" "${data_dir}"; then
+    preview_extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${preview_extra_ports}")
+  fi
   printf '\n--- 执行清单（确认前） ---\n'
   echo "容器名: ${NAME_CFG}"
   echo "目标镜像: ${IMAGE_CFG}"
@@ -3946,14 +5470,14 @@ run_rebuild_from_config_file() {
   echo "保留命令入口（bin）: $(choice_to_yes_no "${BIN_PERSIST_CHOICE_CFG}")"
   echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
-  echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
+  echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
   echo "重建后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
   fi
-  echo "扩展端口映射: $(value_or_unset "${EXTRA_PORTS_CFG}")"
+  echo "扩展端口映射: $(value_or_unset "${preview_extra_ports}")"
 
-  execute_rebuild_plan "${NAME_CFG}" "${IMAGE_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${EXTRA_PORTS_CFG}"
+  execute_rebuild_plan "${NAME_CFG}" "${IMAGE_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}"
 }
 
 execute_easyclaw_upgrade_plan() {
@@ -4049,6 +5573,307 @@ run_deps_from_config_file() {
   write_last_report "deps-manage" "${deps_status}" "${NAME_CFG}" "${data_dir}" "" "" "" "" "" "${deps_nonfatal_issues[@]}"
 }
 
+info_wizard() {
+  show_deployment_info
+}
+
+native_package_for_source_choice() {
+  local source_choice="$1"
+  if [[ "${source_choice}" == "1" ]]; then
+    echo "openclaw"
+  else
+    echo "@qingchencloud/openclaw-zh"
+  fi
+}
+
+native_tag_for_source_choice() {
+  local source_choice="$1"
+  local channel_choice="$2"
+  local explicit_tag="${3:-}"
+  if [[ -n "${explicit_tag}" ]]; then
+    echo "${explicit_tag}"
+    return
+  fi
+  if [[ "${source_choice}" == "1" ]]; then
+    if [[ "${channel_choice}" == "2" ]]; then
+      echo "beta"
+    else
+      echo "latest"
+    fi
+  else
+    if [[ "${channel_choice}" == "2" ]]; then
+      echo "nightly"
+    else
+      echo "latest"
+    fi
+  fi
+}
+
+detect_node_major() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "0"
+    return
+  fi
+  node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo "0"
+}
+
+execute_native_install_plan() {
+  local source_choice="$1"
+  local channel_choice="$2"
+  local explicit_tag="$3"
+  local app_name="$4"
+  local data_dir="$5"
+  local native_prefix="$6"
+
+  local package_name version_tag package_ref
+  package_name=$(native_package_for_source_choice "${source_choice}")
+  version_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "${explicit_tag}")
+  package_ref="${package_name}"
+  [[ -n "${version_tag}" ]] && package_ref="${package_name}@${version_tag}"
+
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    local major
+    major=$(detect_node_major)
+    if [[ "${major}" =~ ^[0-9]+$ ]] && (( major < 22 )); then
+      log_error "原生 npm 模式要求 Node.js >= 22，当前版本不满足"
+      return 1
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+      log_error "未检测到 npm，无法执行原生安装"
+      return 1
+    fi
+  fi
+
+  run_cmd mkdir -p "${data_dir}" "${native_prefix}"
+  run_cmd npm install -g --prefix "${native_prefix}" "${package_ref}"
+
+  local native_status="success"
+  write_last_report "native-install" "${native_status}" "${app_name}" "${data_dir}" "${package_ref}" "" "" "" "" ""
+  printf '\n===============================\n'
+  echo "原生 npm 安装结果"
+  echo "==============================="
+  echo "应用名：${app_name}"
+  echo "包名：${package_ref}"
+  echo "数据目录：${data_dir}"
+  echo "安装前缀：${native_prefix}"
+  echo "启动示例：PATH=${native_prefix}/bin:\$PATH OPENCLAW_HOME=${data_dir} openclaw gateway run"
+  echo "==============================="
+}
+
+run_native_from_config_file() {
+  SOURCE_CHOICE_CFG="2"
+  CHANNEL_CHOICE_CFG="1"
+  OFFICIAL_TAG_CFG=""
+  NAME_CFG="openclaw_native"
+  DATA_DIR_CFG=""
+  NATIVE_PREFIX_CFG=""
+
+  load_simple_config_file "${CONFIG_FILE}"
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local native_prefix="${NATIVE_PREFIX_CFG:-${data_dir}/native}"
+
+  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}"
+}
+
+native_npm_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_native_from_config_file
+    return
+  fi
+
+  printf '\n=== 🧪 原生 npm 安装 ===\n'
+  local source_choice channel_choice explicit_tag name data_dir native_prefix
+  source_choice="2"
+  channel_choice="1"
+  explicit_tag=""
+  name="openclaw_native"
+  data_dir="$(default_data_dir_for_name "${name}")"
+  native_prefix="${data_dir}/native"
+
+  echo "版本来源:"
+  echo "  1) 官方 npm(openclaw)"
+  echo "  2) 中文版 npm(@qingchencloud/openclaw-zh)"
+  source_choice=$(read_choice_default "请选择" "${source_choice}")
+
+  echo "版本通道:"
+  if [[ "${source_choice}" == "1" ]]; then
+    echo "  1) stable(latest)"
+    echo "  2) beta"
+  else
+    echo "  1) stable(latest)"
+    echo "  2) nightly"
+  fi
+  channel_choice=$(read_choice_default "请选择" "${channel_choice}")
+  explicit_tag=$(read_with_default "可选指定 tag（留空按通道）" "${explicit_tag}")
+  explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
+  name=$(read_container_name "应用名（仅用于配置记录）")
+  data_dir=$(read_with_default "数据目录" "${data_dir}")
+  native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
+
+  printf '\n--- 执行清单（确认前） ---\n'
+  echo "来源: $(source_choice_label "${source_choice}")"
+  echo "通道: $(channel_choice_label "${channel_choice}")"
+  echo "指定 tag: $(value_or_unset "${explicit_tag}")"
+  echo "应用名: ${name}"
+  echo "数据目录: ${data_dir}"
+  echo "安装前缀: ${native_prefix}"
+  printf '确认执行? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return
+  fi
+
+  execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}"
+}
+
+default_adopt_config_path() {
+  echo "${HOME}/.openclaw-installer/config.env"
+}
+
+list_adopt_candidate_containers() {
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "openclaw"
+    return
+  fi
+  docker ps -a --format '{{.Names}}|{{.Image}}' 2>/dev/null | awk -F'|' 'tolower($1) ~ /claw/ || tolower($2) ~ /openclaw/ {print $1}'
+}
+
+adopt_existing_container() {
+  local name="$1"
+  local output_file="$2"
+  local fallback_data_dir
+  fallback_data_dir=$(default_data_dir_for_name "${name}")
+
+  if [[ "${DRY_RUN}" -eq 0 ]] && ! container_exists "${name}"; then
+    log_error "容器不存在，无法接管: ${name}"
+    return 1
+  fi
+
+  local image data_dir ports host_port container_port source_choice channel_choice
+  image=$(detect_existing_image "${name}" "")
+  if [[ "${DRY_RUN}" -eq 1 && -z "${image}" ]]; then
+    image=$(official_openclaw_image "latest")
+  fi
+  [[ -n "${image}" ]] || {
+    log_error "无法识别容器镜像，接管失败"
+    return 1
+  }
+  data_dir=$(detect_existing_data_dir "${name}" "${fallback_data_dir}")
+  ports=$(detect_existing_ports "${name}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
+  host_port="${ports%%,*}"
+  container_port="${ports##*,}"
+
+  source_choice="1"
+  [[ "$(image_source_kind "${image}")" == "chinese" ]] && source_choice="2"
+  if [[ "${image}" == *":beta"* || "${image}" == *":main"* || "${image}" == *":nightly"* ]]; then
+    channel_choice="2"
+  else
+    channel_choice="1"
+  fi
+
+  run_cmd mkdir -p "$(dirname "${output_file}")"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "将生成接管配置: ${output_file}"
+  else
+    cat > "${output_file}" <<EOF
+SOURCE_CHOICE=${source_choice}
+CHANNEL_CHOICE=${channel_choice}
+IMAGE=${image}
+NAME=${name}
+DATA_DIR=${data_dir}
+HOST_PORT=${host_port}
+CONTAINER_PORT=${container_port}
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=1
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=${DEFAULT_DEP_SET}
+EOF
+  fi
+
+  printf '\n--- 接管结果 ---\n'
+  echo "容器名: ${name}"
+  echo "镜像: ${image}"
+  echo "数据目录: ${data_dir}"
+  echo "端口: ${host_port}:${container_port}"
+  echo "配置文件: ${output_file}"
+  echo "后续可执行: bash openclawctl.sh --wizard upgrade --config-file ${output_file}"
+  local adopt_url
+  adopt_url="http://<server-ip>:${host_port}/"
+  write_last_report "adopt" "success" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "${adopt_url}" ""
+  write_deployment_info "adopt" "success" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" || true
+}
+
+adopt_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    NAME_CFG=""
+    load_simple_config_file "${CONFIG_FILE}"
+    [[ -n "${NAME_CFG}" ]] || {
+      log_error "配置文件缺少容器名(NAME)"
+      return 1
+    }
+    adopt_existing_container "${NAME_CFG}" "$(default_adopt_config_path)"
+    return
+  fi
+
+  printf '\n=== 🔄 接管外部安装实例 ===\n'
+  local candidates first_candidate name output_file
+  candidates=$(list_adopt_candidate_containers || true)
+  first_candidate=$(printf '%s\n' "${candidates}" | head -n1)
+  if [[ -n "${candidates}" ]]; then
+    echo "发现候选容器:"
+    printf '%s\n' "${candidates}" | sed 's/^/  - /'
+  else
+    echo "未自动发现候选容器，请手动输入容器名。"
+  fi
+  name=$(read_with_default "请输入要接管的容器名" "${first_candidate:-openclaw}")
+  output_file=$(read_with_default "接管配置输出路径" "$(default_adopt_config_path)")
+  adopt_existing_container "${name}" "${output_file}"
+}
+
+persist_append_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_rebuild_from_config_file
+    return
+  fi
+
+  printf '\n=== 🧩 为已有容器追加 Runtime 持久化 ===\n'
+  local name
+  name=$(read_container_name "请输入容器名")
+  local data_dir
+  data_dir=$(detect_existing_data_dir "${name}" "$(default_data_dir_for_name "${name}")")
+  local image
+  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")")
+  local port_pair host_port container_port
+  port_pair=$(detect_existing_ports "${name}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
+  host_port="${port_pair%%,*}"
+  container_port="${port_pair##*,}"
+  local extra_ports
+  extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
+
+  printf '\n--- 执行清单（确认前） ---\n'
+  echo "容器名: ${name}"
+  echo "镜像: ${image}"
+  echo "数据目录: ${data_dir}"
+  echo "端口映射: ${host_port}:${container_port}"
+  echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+  echo "策略: 将通过安全重建追加 bin/env/APT/cache 全量持久化"
+  printf '确认执行? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return
+  fi
+
+  execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "1" "1" "1" "1" "1" "${DEFAULT_DEP_SET}" "${extra_ports}"
+}
+
 install_wizard() {
   if [[ -n "${CONFIG_FILE}" ]]; then
     run_install_from_config_file
@@ -4058,7 +5883,8 @@ install_wizard() {
   local channel_choice=""
   local official_tag=""
   local image=""
-  local host_port="${DEFAULT_HOST_PORT}"
+  local host_port
+  host_port=$(find_recommended_host_port 7100 7200)
   local container_port="${DEFAULT_CONTAINER_PORT}"
   local name=""
   local data_dir=""
@@ -4072,6 +5898,8 @@ install_wizard() {
   local token_manual=""
   local deps_install_choice="1"
   local target_deps="${DEFAULT_DEP_SET}"
+  local software_set=""
+  local skill_set=""
   local extra_ports=""
 
   while true; do
@@ -4085,6 +5913,8 @@ install_wizard() {
     echo "4) 🌐 网络设置: $(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
     echo "5) 🧩 功能加强: $(feature_group_summary "${easy_choice}" "${deps_install_choice}" "${target_deps}")"
     echo "6) 🔐 鉴权方式管理: $(auth_group_summary "${token_mode}" "${token_manual}")"
+    echo "7) 🧰 可选软件: $(software_group_summary "${software_set}")"
+    echo "8) 📚 Skills: $(skill_group_summary "${skill_set}")"
     echo "c) 确认并执行安装"
     echo "q) 取消并返回"
 
@@ -4134,7 +5964,7 @@ install_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
-        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "是否启用 缓存持久化(.npm/go mod/cargo):"
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
@@ -4183,6 +6013,46 @@ install_wizard() {
         fi
         log_info "已更新：$(auth_group_summary "${token_mode}" "${token_manual}")"
         ;;
+      7)
+        local selected=""
+        local choice default_choice token label
+        echo "请选择可选软件（1=安装, 2=跳过）:"
+        for token in ${OPTIONAL_SOFTWARE_ALL}; do
+          label=$(optional_software_label "${token}")
+          default_choice="2"
+          token_in_list "${token}" ${software_set} && default_choice="1"
+          echo "${label}:"
+          echo "  1) 安装"
+          echo "  2) 跳过"
+          choice=$(read_choice_default "请选择" "${default_choice}")
+          [[ "${choice}" == "1" ]] && selected="${selected} ${token}"
+        done
+
+        software_set=$(normalize_software_set "${selected}")
+        if [[ -n "${software_set}" ]]; then
+          deps_install_choice="1"
+          target_deps=$(ensure_dep_set_for_software "${target_deps}" "${software_set}")
+        fi
+        log_info "已更新：$(software_group_summary "${software_set}")"
+        ;;
+      8)
+        local selected_skills=""
+        local skill_choice skill_default token label
+        echo "请选择预装 Skills（1=安装, 2=跳过）:"
+        for token in ${OPTIONAL_SKILL_ALL}; do
+          label=$(optional_skill_label "${token}")
+          skill_default="2"
+          token_in_list "${token}" ${skill_set} && skill_default="1"
+          echo "${label}:"
+          echo "  1) 安装"
+          echo "  2) 跳过"
+          skill_choice=$(read_choice_default "请选择" "${skill_default}")
+          [[ "${skill_choice}" == "1" ]] && selected_skills="${selected_skills} ${token}"
+        done
+
+        skill_set=$(normalize_skill_set "${selected_skills}")
+        log_info "已更新：$(skill_group_summary "${skill_set}")"
+        ;;
       c|C)
         if [[ -z "${image}" ]]; then
           log_error "请先完成“版本镜像选择”"
@@ -4214,6 +6084,13 @@ install_wizard() {
         if should_enable_easyclaw_web_port "${easy_choice}" "" "${data_dir}"; then
           extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
         fi
+        if token_in_list "claudecodeui" ${software_set}; then
+          extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        fi
+        if [[ -n "${software_set}" && "${deps_install_choice}" != "1" ]]; then
+          deps_install_choice="1"
+        fi
+        target_deps=$(ensure_dep_set_for_software "${target_deps}" "${software_set}")
         printf '\n--- 执行清单（确认前） ---\n'
         echo "镜像: ${image}"
         echo "容器名: ${name}"
@@ -4223,8 +6100,10 @@ install_wizard() {
         echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
-        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
+        echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "EasyClaw: $(choice_to_yes_no "${easy_choice}")"
+        echo "可选软件: $(software_set_summary "${software_set}")"
+        echo "Skills: $(skill_set_summary "${skill_set}")"
         echo "依赖补齐: $(choice_to_yes_no "${deps_install_choice}")"
         if [[ "${deps_install_choice}" == "1" ]]; then
           echo "依赖清单: ${target_deps}"
@@ -4238,7 +6117,7 @@ install_wizard() {
           continue
         fi
 
-        execute_install_plan "${image}" "${name}" "${data_dir}" "${host_port}" "${container_port}" "${gateway_bind}" "${token}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easy_choice}" "${deps_install_choice}" "${target_deps}" "${extra_ports}" || continue
+        execute_install_plan "${image}" "${name}" "${data_dir}" "${host_port}" "${container_port}" "${gateway_bind}" "${token}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easy_choice}" "${deps_install_choice}" "${target_deps}" "${extra_ports}" "${software_set}" "${skill_set}" || continue
         return
         ;;
       q|Q)
@@ -4391,7 +6270,7 @@ upgrade_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
-        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "是否启用 缓存持久化(.npm/go mod/cargo):"
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
@@ -4441,6 +6320,9 @@ upgrade_wizard() {
         if should_enable_easyclaw_web_port "${easyclaw_upgrade}" "${name}" "${data_dir}"; then
           extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
         fi
+        if should_enable_claudecodeui_reserved_port "0" "${name}" "${data_dir}"; then
+          extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        fi
 
         printf '\n--- 执行清单（确认前） ---\n'
         echo "容器名: ${name}"
@@ -4450,7 +6332,7 @@ upgrade_wizard() {
         echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
-        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
+        echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "EasyClaw 检查升级: $(choice_to_yes_no "${easyclaw_upgrade}")"
         echo "升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
         if [[ "${deps_repair_choice}" == "1" ]]; then
@@ -4626,7 +6508,7 @@ safe_rebuild_wizard() {
         echo "  1) 是"
         echo "  2) 否"
         apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
-        echo "是否启用 缓存持久化(.npm/go mod):"
+        echo "是否启用 缓存持久化(.npm/go mod/cargo):"
         echo "  1) 是"
         echo "  2) 否"
         cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
@@ -4662,6 +6544,13 @@ safe_rebuild_wizard() {
         press_enter_to_continue
         ;;
       c|C)
+        if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
+          continue
+        fi
+        extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        if should_enable_claudecodeui_reserved_port "0" "${name}" "${data_dir}"; then
+          extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+        fi
         printf '\n--- 执行清单（确认前） ---\n'
         echo "容器名: ${name}"
         echo "目标镜像: ${image}"
@@ -4670,7 +6559,7 @@ safe_rebuild_wizard() {
         echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
-        echo "缓存持久化(.npm/go mod): $(choice_to_yes_no "${cache_persist_choice}")"
+        echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "重建后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${rebuild_dep_set}"
@@ -4853,6 +6742,10 @@ show_main_menu() {
   echo "4) 📦 管理 EasyClaw 工具"
   echo "5) 🔧 检查或补齐运行环境"
   echo "6) 🗑️ 卸载实例"
+  echo "7) 🔄 接管外部安装实例"
+  echo "8) 🧩 追加 Runtime 持久化"
+  echo "9) 🧪 原生 npm 安装"
+  echo "10) 📄 查看部署信息"
   echo "0) 退出"
 }
 
@@ -4869,6 +6762,10 @@ main_loop() {
       4) easyclaw_only_upgrade_wizard ;;
       5) deps_manage_wizard ;;
       6) uninstall_wizard ;;
+      7) adopt_wizard ;;
+      8) persist_append_wizard ;;
+      9) native_npm_wizard ;;
+      10) info_wizard ;;
       0)
         log_info "已退出"
         return
@@ -4881,6 +6778,7 @@ main_loop() {
 }
 
 parse_global_flags() {
+  local positional_wizard_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config-file)
@@ -4904,14 +6802,25 @@ parse_global_flags() {
         shift
         ;;
       --help|-h)
-        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall] [--config-file path]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|info] [--config-file path]"
+        echo "或:   bash openclawctl.sh info --dry-run"
         echo "严格非交互模式: OPENCLAWCTL_STRICT_NONINTERACTIVE=1（要求同时传入 --wizard 与 --config-file）"
         echo "默认进入交互式菜单。"
         exit 0
         ;;
       *)
+        if [[ "${positional_wizard_set}" -eq 0 && -z "${SELECTED_WIZARD}" ]]; then
+          case "$1" in
+            install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|info)
+              SELECTED_WIZARD="$1"
+              positional_wizard_set=1
+              shift
+              continue
+              ;;
+          esac
+        fi
         log_error "未知参数: $1"
-        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall] [--config-file path]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|info] [--config-file path]"
         exit 1
         ;;
     esac
@@ -4926,6 +6835,10 @@ run_selected_wizard() {
     easyclaw) easyclaw_only_upgrade_wizard ;;
     deps) deps_manage_wizard ;;
     uninstall) uninstall_wizard ;;
+    adopt) adopt_wizard ;;
+    persist) persist_append_wizard ;;
+    native) native_npm_wizard ;;
+    info) info_wizard ;;
     *)
       log_error "无效的 wizard: ${SELECTED_WIZARD}"
       exit 1
@@ -4933,6 +6846,7 @@ run_selected_wizard() {
   esac
 }
 
+load_optional_component_catalog
 parse_global_flags "$@"
 enforce_strict_noninteractive_mode
 maybe_exec_tui "$@" || true

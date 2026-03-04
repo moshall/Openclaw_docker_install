@@ -11,8 +11,8 @@ func TestActionOptionsIncludeExpectedFlows(t *testing.T) {
 	t.Parallel()
 
 	options := actionOptions()
-	if len(options) != 7 {
-		t.Fatalf("expected 7 action options, got %d", len(options))
+	if len(options) != 11 {
+		t.Fatalf("expected 11 action options, got %d", len(options))
 	}
 	if options[0].Key != "install" {
 		t.Fatalf("expected first option to be install, got %q", options[0].Key)
@@ -20,11 +20,11 @@ func TestActionOptionsIncludeExpectedFlows(t *testing.T) {
 	if options[2].Key != "rebuild" {
 		t.Fatalf("expected third option to be rebuild, got %q", options[2].Key)
 	}
-	if options[5].Key != "uninstall" {
-		t.Fatalf("expected sixth option to be uninstall, got %q", options[5].Key)
+	if options[9].Key != "uninstall" {
+		t.Fatalf("expected tenth option to be uninstall, got %q", options[9].Key)
 	}
-	if options[6].Key != "quit" {
-		t.Fatalf("expected last option to be quit, got %q", options[6].Key)
+	if options[10].Key != "quit" {
+		t.Fatalf("expected last option to be quit, got %q", options[10].Key)
 	}
 }
 
@@ -51,6 +51,8 @@ func TestWriteInstallConfigFile(t *testing.T) {
 		DepsInstallChoice:      "1",
 		TargetDeps:             "npm uv",
 		ExtraPorts:             "5001:5001",
+		SoftwareSet:            "gh codex",
+		SkillSet:               "obsidian-skills security-checker",
 	}
 
 	path, err := writeInstallConfigFile(dir, cfg)
@@ -71,6 +73,8 @@ func TestWriteInstallConfigFile(t *testing.T) {
 		"NAME=openclaw_demo",
 		"TOKEN_MANUAL=token-123",
 		"TARGET_DEPS=npm uv",
+		"SOFTWARE_SET=gh codex",
+		"SKILL_SET=obsidian-skills security-checker",
 	} {
 		if !strings.Contains(content, needle) {
 			t.Fatalf("expected config file to contain %q, got:\n%s", needle, content)
@@ -290,5 +294,16 @@ func TestResolveImageChoiceUsesOfficialRepoOverride(t *testing.T) {
 	t.Setenv("OPENCLAW_OFFICIAL_REPO", "1panel/openclaw")
 	if got := resolveImageChoice("1", "2"); got != "docker.io/1panel/openclaw:beta" {
 		t.Fatalf("unexpected official image: %q", got)
+	}
+}
+
+func TestSelectedDepsSupportsRust(t *testing.T) {
+	t.Parallel()
+
+	if got := selectedDeps(true, true, false, true); got != "npm uv rust" {
+		t.Fatalf("unexpected deps with rust: %q", got)
+	}
+	if got := selectedDeps(false, false, false, true); got != "rust" {
+		t.Fatalf("unexpected rust-only deps: %q", got)
 	}
 }

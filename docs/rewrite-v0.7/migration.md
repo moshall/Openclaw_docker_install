@@ -18,6 +18,10 @@
   - `status`
   - `logs`
   - `uninstall`
+  - `adopt` (接管外部安装容器，生成配置)
+  - `persist` (为已有容器追加 runtime 持久化重建)
+  - `native` (原生 npm 安装入口)
+  - `info` (查看 deployment-info)
 
 ## Rollback
 - To rollback to previous stable behavior:

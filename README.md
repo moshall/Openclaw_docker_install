@@ -6,14 +6,21 @@
 - 升级实例（低版本 -> 高版本）
 - 安全重建（端口/挂载调整）
 - 卸载（安全卸载 / 完整卸载）
+- 接管外部手工安装容器（adopt）
+- 追加 Runtime 持久化重建（persist）
+- 原生 npm 安装入口（native）
 - EasyClaw 管理
-- 容器依赖检测与补齐（默认 `npm uv`，可选 `go`）
+- 容器依赖检测与补齐（默认 `npm uv`，可选 `go/rust`）
+- 可选软件预装（`gh/claude/codex/opencode/gemini/notebooklm/easyclaw/claudecodeui/obsidian/ralph`）
+- Skill 预装（`obsidian-skills/security-checker`）
 
 ## 目录结构
 
 ```text
 .
 ├── openclawctl.sh              # 主脚本（真实执行入口）
+├── config/
+│   └── optional-components.conf # 可选软件/Skill 配置目录（可扩展）
 ├── installer/
 │   └── v07/                    # v0.7 重构版安装器（新入口）
 │       ├── openclaw-install.sh
@@ -76,8 +83,9 @@ bash ./installer/v07/openclaw-install.sh \
 
 说明：
 
-- `--wizard` 支持：`install|upgrade|rebuild|status|logs|uninstall`
+- `--wizard` 支持：`install|upgrade|rebuild|status|logs|uninstall|adopt|persist|native|info`
 - 严格模式会输出 `STRICT_REPORT_PATH=.../runtime/strict-report.json`
+- 支持 `info` 入口读取部署信息（`~/.openclaw-installer/deployment-info.txt`）。
 
 ## 镜像策略
 
@@ -109,6 +117,9 @@ bash ./installer/v07/openclaw-install.sh \
    - Linux：`/opt/openclaw/apps/<容器名>`
    - macOS：`$HOME/.openclaw/apps/<容器名>`
 
+安装向导会优先扫描 `7100-7200` 端口段并给出推荐主端口。
+选择 `claudecodeui` 预装时，会自动占用预留端口段（主端口 `+1/+2/+3` 对应容器 `7201/7202/7203`）并安装 `task-master-ai` 集成。
+
 ## 关键安全机制
 
 - Preflight 检查：Docker 可用性、目录可写、镜像仓库、端口信息。
@@ -119,13 +130,15 @@ bash ./installer/v07/openclaw-install.sh \
 - `lan` 绑定下自动尝试写入 Control UI 兼容项（不支持的旧键会自动跳过，不阻断主流程）。
 - APT 手工包回放前会先校验 `sources.list.d` 格式，并自动隔离异常源文件，降低升级后依赖补齐失败概率。
 - 支持严格非交互模式：用于批量回归时输出固定路径 JSON 报告（`runtime/strict-report.json`）。
+- 安装/升级/重建/接管后会写入 `~/.openclaw-installer/deployment-info.txt`（可用 `--wizard info` 查看）。
 
 ## Docker 与环境补齐
 
 - Docker 缺失时：
   - Linux 可自动安装（`OPENCLAWCTL_AUTO_INSTALL_DOCKER=1` 可无交互）
   - macOS 提供 Docker Desktop 引导
-- 依赖补齐：支持 apt/apk/dnf/yum 生态，支持 `npm uv go` 组合。
+- 依赖补齐：支持 apt/apk/dnf/yum 生态，支持 `npm uv go rust` 组合。
+- Rust 持久化：支持 `bin/env/cache` 分层挂载（`/root/.cargo/bin`、`/root/.rustup`、`/root/.cargo/{registry,git}`）。
 - runtime 持久化支持：bin/env/apt 配置/cache 分层选择。
 
 ## 常用环境变量
@@ -138,6 +151,7 @@ bash ./installer/v07/openclaw-install.sh \
 - `OPENCLAWCTL_TRUSTED_PROXIES`：网关 trusted proxies。
 - `OPENCLAWCTL_FORCE_SHELL=1`：强制禁用 TUI，直接 Shell 菜单。
 - `OPENCLAWCTL_STRICT_NONINTERACTIVE=1`：严格非交互模式（要求同时传 `--wizard` + `--config-file`，并输出 `STRICT_REPORT_PATH`）。
+- `OPENCLAWCTL_COMPONENTS_FILE`：覆盖可选软件/Skill 目录文件路径（默认 `config/optional-components.conf`）。
 
 ## 测试
 
@@ -172,6 +186,12 @@ bash ./tests/installer_v07_docs_test.sh
 说明：`2026.2.5` 在官方 tags 中不存在，因此低版本升级验证使用最接近可用版本 `2026.2.6`。
 
 补充：在 **2026-03-03** 的真机回归中，已验证官方短 tag `260205/260226` 不存在时会报清晰错误，并可使用可用 tag 列表进行回退升级。
+
+补充：在 **2026-03-03** 的扩展回归中，已覆盖：
+
+- 可选软件链路（gh/codex/claudecodeui）与 Skill 预装链路（obsidian-skills/security-checker）
+- `adopt` 接管配置生成、`persist` 追加 runtime 持久化
+- `native` 原生 npm 安装入口（Node22 前置检查）
 
 ## 开发说明
 

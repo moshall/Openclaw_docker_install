@@ -83,6 +83,33 @@ assert_contains "${wizard_install_cfg_output}" "TOKEN=testtoken123"
 assert_contains "${wizard_install_cfg_output}" "-p 5001:5001"
 assert_not_contains "${wizard_install_cfg_output}" "=== 🚀 安装新实例 ==="
 
+wizard_install_zh_nightly_cfg="${tmpdir}/install-zh-nightly.cfg"
+cat > "${wizard_install_zh_nightly_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=2
+IMAGE=ghcr.io/1186258278/openclaw-zh:nightly
+HOST_PORT=4114
+CONTAINER_PORT=18789
+NAME=openclaw_cfg_zh_nightly
+DATA_DIR=/opt/1panel/apps/openclaw_cfg_zh_nightly
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=testtoken456
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+wizard_install_zh_nightly_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_zh_nightly_cfg}")
+assert_contains "${wizard_install_zh_nightly_output}" "镜像: ghcr.io/1186258278/openclaw-zh:nightly"
+assert_contains "${wizard_install_zh_nightly_output}" "/runtime/usr-local-go:/usr/local/go"
+assert_not_contains "${wizard_install_zh_nightly_output}" "/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules"
+assert_contains "${wizard_install_zh_nightly_output}" "docker exec openclaw_cfg_zh_nightly sh -lc <npm-runtime-prefix-script>"
+
 wizard_upgrade_cfg="${tmpdir}/upgrade.cfg"
 cat > "${wizard_upgrade_cfg}" <<'EOF'
 NAME=openclaw_up_cfg
@@ -175,7 +202,7 @@ fi
 assert_contains "${wizard_invalid_output}" "无效的 wizard"
 
 # 1) install wizard: single-screen grouped editing + chinese stable + deps default(npm/uv)
-install_input=$'1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n\n6\n1\nc\ny\n0\n'
+install_input=$'1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
 install_output=$(printf "%s" "${install_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${install_output}" "1) 🚀 安装新实例"
@@ -205,7 +232,7 @@ assert_contains "${install_output}" "TOKEN="
 assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 
 # 2) upgrade wizard: single-screen grouped editing + official beta + env persistence(on) + deps include go
-upgrade_input=$'2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n\n5\n\nc\ny\n0\n'
+upgrade_input=$'2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_output}" "2) 🔄 升级已有实例"
@@ -280,7 +307,7 @@ assert_contains "${upgrade_abort_output}" "已取消"
 assert_not_contains "${upgrade_abort_output}" "docker pull"
 
 # 7) standalone dependency check/install menu (default npm/uv, go optional)
-deps_menu_input=$'5\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n\ny\n0\n'
+deps_menu_input=$'5\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
 deps_menu_output=$(printf "%s" "${deps_menu_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${deps_menu_output}" "开始检测容器依赖: npm uv"
@@ -374,5 +401,265 @@ tag_fallback_output=$(OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026
 assert_contains "${tag_fallback_output}" "官方标签 260226 不存在"
 assert_contains "${tag_fallback_output}" "docker pull docker.io/1panel/openclaw:2026.2.26"
 assert_not_contains "${tag_fallback_output}" "docker pull docker.io/1panel/openclaw:260226"
+
+# 18) install should support optional software/skill selections via config file
+wizard_install_feature_cfg="${tmpdir}/install-feature.cfg"
+cat > "${wizard_install_feature_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4115
+CONTAINER_PORT=18789
+NAME=openclaw_feature_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_feature_cfg
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=2
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=token-feature
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv
+SOFTWARE_SET=gh,codex
+SKILL_SET=obsidian-skills,security-checker
+EXTRA_PORTS=
+EOF
+wizard_install_feature_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_feature_cfg}")
+assert_contains "${wizard_install_feature_output}" "可选软件: GitHub CLI(gh)、Codex CLI"
+assert_contains "${wizard_install_feature_output}" "Skills: Obsidian Skills、Skill 安全检查"
+assert_contains "${wizard_install_feature_output}" "docker exec openclaw_feature_cfg bash -lc <software-gh-install-script>"
+assert_contains "${wizard_install_feature_output}" "docker exec openclaw_feature_cfg bash -lc <software-npm-codex-install-script>"
+assert_contains "${wizard_install_feature_output}" "git clone --depth=1 https://github.com/kepano/obsidian-skills.git /opt/1panel/apps/openclaw_feature_cfg/workspace/skills/obsidian-skills"
+assert_contains "${wizard_install_feature_output}" "git clone --depth=1 --filter=blob:none --sparse https://github.com/moshall/skill_collcet.git /opt/1panel/apps/openclaw_feature_cfg/workspace/skills/security-checker"
+
+# 19) native npm mode should support dry-run config execution
+native_cfg="${tmpdir}/native.cfg"
+cat > "${native_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=2
+OFFICIAL_TAG=
+NAME=openclaw_native_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_native_cfg
+NATIVE_PREFIX=/opt/1panel/apps/openclaw_native_cfg/native
+EOF
+native_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native --config-file "${native_cfg}")
+assert_contains "${native_output}" "npm install -g --prefix /opt/1panel/apps/openclaw_native_cfg/native @qingchencloud/openclaw-zh@nightly"
+assert_contains "${native_output}" "原生 npm 安装结果"
+
+# 20) adopt mode should output inferred config summary in dry-run
+adopt_cfg="${tmpdir}/adopt.cfg"
+cat > "${adopt_cfg}" <<'EOF'
+NAME=openclaw_adopt_cfg
+EOF
+adopt_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard adopt --config-file "${adopt_cfg}")
+assert_contains "${adopt_output}" "接管结果"
+assert_contains "${adopt_output}" "容器名: openclaw_adopt_cfg"
+assert_contains "${adopt_output}" "配置文件:"
+
+# 21) persist mode should route through rebuild flow in config mode
+persist_cfg="${tmpdir}/persist.cfg"
+cat > "${persist_cfg}" <<'EOF'
+NAME=openclaw_persist_cfg
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4334
+CONTAINER_PORT=18789
+DATA_DIR=/opt/1panel/apps/openclaw_persist_cfg
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv
+EOF
+persist_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard persist --config-file "${persist_cfg}")
+assert_contains "${persist_output}" "docker rm -f openclaw_persist_cfg"
+assert_contains "${persist_output}" "/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d"
+
+# 22) deployment info wizard should print deterministic deployment-info path
+info_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard info)
+assert_contains "${info_output}" "deployment-info.txt"
+assert_contains "${info_output}" ".openclaw-installer"
+
+# 23) install config should accept catalog-driven software extensions (easyclaw/obsidian)
+wizard_install_catalog_cfg="${tmpdir}/install-catalog.cfg"
+cat > "${wizard_install_catalog_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4116
+CONTAINER_PORT=18789
+NAME=openclaw_catalog_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_catalog_cfg
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=2
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=token-catalog
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv
+SOFTWARE_SET=easyclaw,obsidian
+SKILL_SET=obsidian-skills
+EXTRA_PORTS=
+EOF
+wizard_install_catalog_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_catalog_cfg}")
+assert_contains "${wizard_install_catalog_output}" "可选软件: EasyClaw、Obsidian CLI"
+
+# 24) positional info command should be accepted (openclaw info style)
+set +e
+positional_info_output=$(bash "${SCRIPT_PATH}" info --dry-run 2>&1)
+positional_info_status=$?
+set -e
+if [[ "${positional_info_status}" -ne 0 ]]; then
+  fail "expected positional info command to succeed"
+fi
+assert_contains "${positional_info_output}" "deployment-info.txt"
+
+# 25) install config should support claudecodeui + taskmaster and auto reserved port mapping
+wizard_install_claudecodeui_cfg="${tmpdir}/install-claudecodeui.cfg"
+cat > "${wizard_install_claudecodeui_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4117
+CONTAINER_PORT=18789
+NAME=openclaw_claudecodeui_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_claudecodeui_cfg
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=2
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=token-claudecodeui
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=uv
+SOFTWARE_SET=claudecodeui
+SKILL_SET=
+EXTRA_PORTS=
+EOF
+wizard_install_claudecodeui_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_claudecodeui_cfg}")
+assert_contains "${wizard_install_claudecodeui_output}" "可选软件: ClaudeCodeUI(TaskMaster AI)"
+assert_contains "${wizard_install_claudecodeui_output}" "-p 4118:7201"
+assert_contains "${wizard_install_claudecodeui_output}" "docker exec openclaw_claudecodeui_cfg bash -lc <software-claudecodeui-install-script>"
+
+# 26) install config should support rust deps and rust runtime persistence mounts
+wizard_install_rust_cfg="${tmpdir}/install-rust.cfg"
+cat > "${wizard_install_rust_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4119
+CONTAINER_PORT=18789
+NAME=openclaw_rust_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_rust_cfg
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=token-rust
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv rust
+SOFTWARE_SET=
+SKILL_SET=
+EXTRA_PORTS=
+EOF
+wizard_install_rust_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_rust_cfg}")
+assert_contains "${wizard_install_rust_output}" "开始检测容器依赖: npm uv rust"
+assert_contains "${wizard_install_rust_output}" "依赖清单: npm uv rust"
+assert_contains "${wizard_install_rust_output}" "/runtime/root-cargo-bin:/root/.cargo/bin"
+assert_contains "${wizard_install_rust_output}" "/runtime/root-rustup:/root/.rustup"
+assert_contains "${wizard_install_rust_output}" "/runtime/root-cargo-registry:/root/.cargo/registry"
+assert_contains "${wizard_install_rust_output}" "/runtime/root-cargo-git:/root/.cargo/git"
+
+# 27) install config should support ralph-orchestrator optional software
+wizard_install_ralph_cfg="${tmpdir}/install-ralph.cfg"
+cat > "${wizard_install_ralph_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4120
+CONTAINER_PORT=18789
+NAME=openclaw_ralph_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_ralph_cfg
+BIND_CHOICE=2
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=2
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=token-ralph
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=uv
+SOFTWARE_SET=ralph
+SKILL_SET=
+EXTRA_PORTS=
+EOF
+wizard_install_ralph_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_ralph_cfg}")
+assert_contains "${wizard_install_ralph_output}" "可选软件: Ralph Orchestrator"
+assert_contains "${wizard_install_ralph_output}" "docker exec openclaw_ralph_cfg bash -lc <software-npm-ralph-install-script>"
+
+# 28) upgrade should reload software profile and auto-keepalive selected software
+upgrade_profile_data_dir="${tmpdir}/openclaw_upgrade_profile"
+mkdir -p "${upgrade_profile_data_dir}/runtime"
+cat > "${upgrade_profile_data_dir}/runtime/software.profile" <<'EOF'
+notebooklm
+EOF
+wizard_upgrade_profile_cfg="${tmpdir}/upgrade-profile.cfg"
+cat > "${wizard_upgrade_profile_cfg}" <<EOF
+NAME=openclaw_upgrade_profile
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4340
+CONTAINER_PORT=18789
+DATA_DIR=${upgrade_profile_data_dir}
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+wizard_upgrade_profile_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${wizard_upgrade_profile_cfg}")
+assert_contains "${wizard_upgrade_profile_output}" "检测到已保存的软件档案，升级后将自动保活"
+assert_contains "${wizard_upgrade_profile_output}" "已自动开启升级后依赖补齐流程"
+assert_contains "${wizard_upgrade_profile_output}" "开始检测容器依赖: npm uv python3"
+assert_contains "${wizard_upgrade_profile_output}" "docker exec openclaw_upgrade_profile bash -lc <software-notebooklm-install-script>"
+
+# 29) persist should auto avoid easyclaw web host-port conflicts
+persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"
+cat > "${persist_conflict_cfg}" <<'EOF'
+NAME=openclaw_persist_conflict
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4335
+CONTAINER_PORT=18789
+DATA_DIR=/opt/1panel/apps/openclaw_persist_conflict
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+DEPS_INSTALL_CHOICE=1
+TARGET_DEPS=npm uv
+EOF
+persist_conflict_output=$(OPENCLAWCTL_TEST_OCCUPIED_PORTS=4231 bash "${SCRIPT_PATH}" --dry-run --wizard persist --config-file "${persist_conflict_cfg}")
+assert_contains "${persist_conflict_output}" "-p 5231:4231"
+assert_not_contains "${persist_conflict_output}" "-p 4231:4231"
+
+# 30) strict non-interactive adopt should emit strict report path
+strict_adopt_output=$(OPENCLAWCTL_STRICT_NONINTERACTIVE=1 bash "${SCRIPT_PATH}" --dry-run --wizard adopt --config-file "${adopt_cfg}")
+assert_contains "${strict_adopt_output}" "STRICT_REPORT_PATH="
+assert_contains "${strict_adopt_output}" "/runtime/strict-report.json"
 
 echo "[PASS] interactive openclawctl tests"

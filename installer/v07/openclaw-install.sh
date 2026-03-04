@@ -114,6 +114,10 @@ v07_pick_interactive_action() {
   [4] status
   [5] logs
   [6] uninstall
+  [7] adopt
+  [8] persist
+  [9] native
+  [10] info
   [0] exit
 MENU
   local action_choice=""
@@ -125,10 +129,45 @@ MENU
     4) printf 'status\n' ;;
     5) printf 'logs\n' ;;
     6) printf 'uninstall\n' ;;
+    7) printf 'adopt\n' ;;
+    8) printf 'persist\n' ;;
+    9) printf 'native\n' ;;
+    10) printf 'info\n' ;;
     0|"") printf 'exit\n' ;;
     *)
       v07_log_error "无效选择: ${action_choice}"
       return 1
+      ;;
+  esac
+}
+
+v07_prompt_1panel_install_mode_if_needed() {
+  local action="$1"
+  if [[ "${action}" != "install" || "${V07_NON_INTERACTIVE}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "${ENV_1PANEL:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  v07_init_runtime_config_defaults
+  CFG_1PANEL_MODE="force_on"
+
+  printf '✅ 检测到 1Panel 环境\n'
+  printf '请选择 1Panel 集成方式：\n'
+  printf '  [1] API 自动安装（需 API Token）\n'
+  printf '  [2] Compose 文件模式（默认）\n'
+  local mode_choice=""
+  read -r -p "请选择 [2]: " mode_choice || true
+  case "${mode_choice:-2}" in
+    1)
+      CFG_1PANEL_DEPLOY_MODE="api"
+      read -r -p "1Panel API 地址 [$(v07_1panel_api_default_base)]: " CFG_1PANEL_API_BASE || true
+      CFG_1PANEL_API_BASE="${CFG_1PANEL_API_BASE:-$(v07_1panel_api_default_base)}"
+      read -r -p "1Panel API Token（留空则自动回退 Compose）: " CFG_1PANEL_API_TOKEN || true
+      ;;
+    *)
+      CFG_1PANEL_DEPLOY_MODE="compose"
       ;;
   esac
 }
@@ -157,6 +196,7 @@ v07_run_entrypoint() {
     return 0
   fi
 
+  v07_prompt_1panel_install_mode_if_needed "${action}"
   v07_log_info "执行动作: ${action}"
   v07_run_action "${action}"
 }

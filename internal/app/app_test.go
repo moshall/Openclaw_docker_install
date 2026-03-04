@@ -45,8 +45,8 @@ func TestActionOptionsExposeQuitEntry(t *testing.T) {
 	t.Parallel()
 
 	options := app.ActionOptions()
-	if len(options) != 7 {
-		t.Fatalf("expected 7 action options, got %d", len(options))
+	if len(options) != 11 {
+		t.Fatalf("expected 11 action options, got %d", len(options))
 	}
 	last := options[len(options)-1]
 	if last.Key != "quit" {
@@ -54,5 +54,15 @@ func TestActionOptionsExposeQuitEntry(t *testing.T) {
 	}
 	if last.Label == "" || last.Description == "" {
 		t.Fatalf("expected quit option to include label and description: %+v", last)
+	}
+
+	found := map[string]bool{}
+	for _, option := range options {
+		found[option.Key] = true
+	}
+	for _, key := range []string{"adopt", "persist", "native", "info"} {
+		if !found[key] {
+			t.Fatalf("expected action options to include %q", key)
+		}
 	}
 }

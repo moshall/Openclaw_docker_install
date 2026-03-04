@@ -21,7 +21,7 @@ OpenClaw 一键安装向导 v0.7
   --dry-run           仅输出执行计划，不真正执行
   --non-interactive   非交互模式（要求提供 --config-file）
   --config-file PATH  配置文件路径
-  --wizard ACTION     直接执行动作（install|upgrade|rebuild|status|logs|uninstall）
+  --wizard ACTION     直接执行动作（install|upgrade|rebuild|status|logs|uninstall|adopt|persist|native|info）
   --help, -h          显示帮助
 USAGE
 }

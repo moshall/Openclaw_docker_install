@@ -23,5 +23,6 @@ help_output=$(bash "${SCRIPT_PATH}" --help)
 assert_contains "${help_output}" "OpenClaw 一键安装向导"
 assert_contains "${help_output}" "--dry-run"
 assert_contains "${help_output}" "--non-interactive"
+assert_contains "${help_output}" "adopt|persist|native|info"
 
 echo "[PASS] installer v0.7 smoke tests"

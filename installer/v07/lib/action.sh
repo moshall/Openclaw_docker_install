@@ -192,6 +192,164 @@ v07_action_logs() {
   v07_container_logs "${CFG_APP_NAME}" 120
 }
 
+v07_detect_host_port_from_container() {
+  local name="$1"
+  local mapping
+  mapping=$(docker port "${name}" 18789/tcp 2>/dev/null | head -n1 || true)
+  if [[ "${mapping}" =~ :([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+v07_detect_data_dir_from_container() {
+  local name="$1"
+  local mounts source destination
+  mounts=$(docker inspect -f '{{range .Mounts}}{{println .Source "|" .Destination}}{{end}}' "${name}" 2>/dev/null || true)
+  while IFS='|' read -r source destination; do
+    source=$(echo "${source}" | xargs 2>/dev/null || true)
+    destination=$(echo "${destination}" | xargs 2>/dev/null || true)
+    [[ -z "${source}" || -z "${destination}" ]] && continue
+    if [[ "${destination}" == "/root/.openclaw" || "${destination}" == "/home/node/.openclaw" ]]; then
+      printf '%s\n' "${source}"
+      return 0
+    fi
+  done <<< "${mounts}"
+  return 1
+}
+
+v07_action_adopt() {
+  v07_init_runtime_config_defaults
+  if [[ "${V07_DRY_RUN:-0}" == "0" ]] && ! docker inspect "${CFG_APP_NAME}" >/dev/null 2>&1; then
+    v07_write_action_report "adopt" "failed" "container not found"
+    return 1
+  fi
+
+  if [[ -z "${CFG_DOCKER_IMAGE}" ]]; then
+    if [[ "${V07_DRY_RUN:-0}" == "1" ]]; then
+      CFG_DOCKER_IMAGE="ghcr.io/1186258278/openclaw-zh:latest"
+    else
+      CFG_DOCKER_IMAGE=$(docker inspect -f '{{.Config.Image}}' "${CFG_APP_NAME}" 2>/dev/null || true)
+    fi
+  fi
+  if [[ "${CFG_DOCKER_IMAGE}" == *"openclaw-zh"* ]]; then
+    CFG_SOURCE="chinese"
+    CFG_CHANNEL="${CFG_CHANNEL:-stable}"
+  else
+    CFG_SOURCE="official"
+    CFG_CHANNEL="${CFG_CHANNEL:-stable}"
+  fi
+
+  if [[ -z "${CFG_DATA_DIR}" ]]; then
+    CFG_DATA_DIR=$(v07_detect_data_dir_from_container "${CFG_APP_NAME}" || true)
+  fi
+  if [[ -z "${CFG_DATA_DIR}" ]]; then
+    local is_1panel
+    is_1panel=$(v07_is_1panel_mode)
+    CFG_DATA_DIR=$(v07_host_data_dir "${ENV_OS:-linux}" "${is_1panel}" "${CFG_APP_NAME}")
+  fi
+
+  if [[ -z "${CFG_HOST_PORT}" ]]; then
+    CFG_HOST_PORT=$(v07_detect_host_port_from_container "${CFG_APP_NAME}" || true)
+  fi
+  [[ -n "${CFG_HOST_PORT}" ]] || CFG_HOST_PORT=$(v07_find_free_port 7100 7200)
+  v07_allocate_port_block "${CFG_HOST_PORT}"
+
+  CFG_RUNTIME_DIR="${CFG_DATA_DIR}/runtime"
+  CFG_COMPOSE_FILE="${CFG_RUNTIME_DIR}/${V07_COMPOSE_FILE_BASENAME}"
+  v07_step write_config
+  v07_save_runtime_config >/dev/null
+  v07_write_action_report "adopt" "success"
+}
+
+v07_action_persist() {
+  v07_prepare_context "persist"
+
+  v07_step prepare_dirs
+  v07_ensure_runtime_dirs "${CFG_DATA_DIR}" "${CFG_RUNTIME_DIR}"
+
+  v07_step compose_down
+  v07_docker_compose_down "${CFG_COMPOSE_FILE}"
+
+  v07_step generate_compose
+  v07_generate_compose_file "${CFG_COMPOSE_FILE}" "${CFG_APP_NAME}" "${CFG_DOCKER_IMAGE}" "${CFG_SOURCE}" "${CFG_DATA_DIR}" "${CFG_HOST_PORT}" "${CFG_PORT_RESERVED_1}" "${CFG_PORT_RESERVED_2}" "${CFG_PORT_RESERVED_3}" "${CFG_EASYCLAW_ENABLED}" "${CFG_EASYCLAW_PORT}" >/dev/null
+
+  v07_apply_compose_deployment
+
+  v07_step wait_healthy
+  if ! v07_wait_container_healthy "${CFG_APP_NAME}" 90; then
+    v07_write_action_report "persist" "failed" "container startup timeout"
+    return 1
+  fi
+
+  v07_step write_config
+  v07_save_runtime_config >/dev/null
+  v07_write_action_report "persist" "success"
+}
+
+v07_native_channel_tag() {
+  local source="$1"
+  local channel="$2"
+  case "${source}" in
+    official)
+      [[ "${channel}" == "beta" ]] && printf 'beta\n' || printf 'latest\n'
+      ;;
+    *)
+      [[ "${channel}" == "nightly" ]] && printf 'nightly\n' || printf 'latest\n'
+      ;;
+  esac
+}
+
+v07_action_native() {
+  v07_init_runtime_config_defaults
+  local package_name
+  if [[ "${CFG_SOURCE}" == "official" ]]; then
+    package_name="openclaw"
+  else
+    package_name="@qingchencloud/openclaw-zh"
+  fi
+  local tag
+  tag="${CFG_VERSION_REQUEST:-}"
+  [[ -n "${tag}" ]] || tag=$(v07_native_channel_tag "${CFG_SOURCE}" "${CFG_CHANNEL}")
+  local package_ref="${package_name}@${tag}"
+
+  if [[ -z "${CFG_DATA_DIR}" ]]; then
+    local is_1panel
+    is_1panel=$(v07_is_1panel_mode)
+    CFG_DATA_DIR=$(v07_host_data_dir "${ENV_OS:-linux}" "${is_1panel}" "${CFG_APP_NAME}")
+  fi
+  local native_prefix="${CFG_DATA_DIR}/native"
+  v07_run_cmd mkdir -p "${native_prefix}"
+  if [[ "${V07_DRY_RUN:-0}" == "0" ]] && ! command -v npm >/dev/null 2>&1; then
+    v07_write_action_report "native" "failed" "npm not found"
+    return 1
+  fi
+  v07_run_cmd npm install -g --prefix "${native_prefix}" "${package_ref}"
+  v07_write_action_report "native" "success"
+}
+
+v07_action_info() {
+  v07_init_runtime_config_defaults
+  if [[ -z "${CFG_DATA_DIR}" ]]; then
+    local is_1panel
+    is_1panel=$(v07_is_1panel_mode)
+    CFG_DATA_DIR=$(v07_host_data_dir "${ENV_OS:-linux}" "${is_1panel}" "${CFG_APP_NAME}")
+  fi
+  local report_file
+  report_file=$(v07_report_path "${CFG_DATA_DIR}")
+  if [[ "${V07_DRY_RUN:-0}" == "1" ]]; then
+    printf 'STRICT_REPORT_PATH=%s\n' "${report_file}"
+    return 0
+  fi
+  if [[ -f "${report_file}" ]]; then
+    cat "${report_file}"
+  else
+    printf 'STRICT_REPORT_PATH=%s\n' "${report_file}"
+    v07_log_warn "strict report 不存在，请先执行 install/upgrade/rebuild"
+  fi
+}
+
 v07_run_action() {
   local action="$1"
   case "${action}" in
@@ -201,6 +359,10 @@ v07_run_action() {
     uninstall) v07_action_uninstall ;;
     status) v07_action_status ;;
     logs) v07_action_logs ;;
+    adopt) v07_action_adopt ;;
+    persist) v07_action_persist ;;
+    native) v07_action_native ;;
+    info) v07_action_info ;;
     *)
       v07_log_error "不支持的动作: ${action}"
       return 1

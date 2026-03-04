@@ -38,6 +38,8 @@ type installConfig struct {
 	DepsInstallChoice      string
 	TargetDeps             string
 	ExtraPorts             string
+	SoftwareSet            string
+	SkillSet               string
 }
 
 type upgradeConfig struct {
@@ -89,6 +91,34 @@ type depsConfig struct {
 	DataDir    string
 	Mode       string
 	TargetDeps string
+}
+
+type adoptConfig struct {
+	Name string
+}
+
+type persistConfig struct {
+	Name                   string
+	Image                  string
+	HostPort               string
+	ContainerPort          string
+	DataDir                string
+	BinPersistChoice       string
+	EnvPersistChoice       string
+	APTConfigPersistChoice string
+	CachePersistChoice     string
+	DepsInstallChoice      string
+	TargetDeps             string
+	ExtraPorts             string
+}
+
+type nativeConfig struct {
+	SourceChoice  string
+	ChannelChoice string
+	OfficialTag   string
+	Name          string
+	DataDir       string
+	NativePrefix  string
 }
 
 const officialOpenclawRepoDefault = "1panel/openclaw"
@@ -223,6 +253,51 @@ func run(args []string) int {
 		defer os.Remove(cfgPath)
 		return execShell(shellScript, action, dryRun, cfgPath)
 	}
+	if action == "adopt" {
+		cfg, err := promptAdoptConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "接管表单失败: %v\n", err)
+			return 1
+		}
+		cfgPath, err := writeAdoptConfigFile(os.TempDir(), cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "写入接管配置失败: %v\n", err)
+			return 1
+		}
+		defer os.Remove(cfgPath)
+		return execShell(shellScript, action, dryRun, cfgPath)
+	}
+	if action == "persist" {
+		cfg, err := promptPersistConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "持久化重建表单失败: %v\n", err)
+			return 1
+		}
+		cfgPath, err := writePersistConfigFile(os.TempDir(), cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "写入持久化重建配置失败: %v\n", err)
+			return 1
+		}
+		defer os.Remove(cfgPath)
+		return execShell(shellScript, action, dryRun, cfgPath)
+	}
+	if action == "native" {
+		cfg, err := promptNativeConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "原生 npm 表单失败: %v\n", err)
+			return 1
+		}
+		cfgPath, err := writeNativeConfigFile(os.TempDir(), cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "写入原生 npm 配置失败: %v\n", err)
+			return 1
+		}
+		defer os.Remove(cfgPath)
+		return execShell(shellScript, action, dryRun, cfgPath)
+	}
+	if action == "info" {
+		return execShell(shellScript, action, dryRun, "")
+	}
 
 	return execShell(shellScript, action, dryRun, "")
 }
@@ -330,6 +405,8 @@ func promptInstallConfig() (installConfig, error) {
 		DepsInstallChoice:      "1",
 		TargetDeps:             "npm uv",
 		ExtraPorts:             "",
+		SoftwareSet:            "",
+		SkillSet:               "",
 	}
 
 	source := "中文版"
@@ -344,6 +421,7 @@ func promptInstallConfig() (installConfig, error) {
 	npmEnabled := true
 	uvEnabled := true
 	goEnabled := false
+	rustEnabled := false
 	tokenMode := "自动生成"
 
 	form := huh.NewForm(
@@ -372,7 +450,7 @@ func promptInstallConfig() (installConfig, error) {
 			huh.NewConfirm().Title("保留命令入口（bin）").Value(&binPersist),
 			huh.NewConfirm().Title("保留运行环境（env）").Value(&envPersist),
 			huh.NewConfirm().Title("保留 APT 源/Key").Value(&aptPersist),
-			huh.NewConfirm().Title("保留缓存（.npm/go mod）").Value(&cachePersist),
+			huh.NewConfirm().Title("保留缓存（.npm/go mod/cargo）").Value(&cachePersist),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().Title("安装 EasyClaw").Value(&easy),
@@ -380,6 +458,11 @@ func promptInstallConfig() (installConfig, error) {
 			huh.NewConfirm().Title("包含 npm").Value(&npmEnabled),
 			huh.NewConfirm().Title("包含 uv").Value(&uvEnabled),
 			huh.NewConfirm().Title("包含 go").Value(&goEnabled),
+			huh.NewConfirm().Title("包含 rust").Value(&rustEnabled),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("可选软件（逗号或空格分隔，如 gh,codex）").Value(&cfg.SoftwareSet),
+			huh.NewInput().Title("预装 Skills（逗号或空格分隔，如 obsidian-skills）").Value(&cfg.SkillSet),
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Token 方式").Options(
@@ -405,7 +488,7 @@ func promptInstallConfig() (installConfig, error) {
 	cfg.EasyChoice = boolToChoice(easy)
 	cfg.DepsInstallChoice = boolToChoice(depsRepair)
 	cfg.TokenMode = mapTokenMode(tokenMode)
-	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled)
+	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled)
 
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		cfg.DataDir = defaultDataDirForName(cfg.Name)
@@ -443,6 +526,7 @@ func promptUpgradeConfig() (upgradeConfig, error) {
 	npmEnabled := true
 	uvEnabled := true
 	goEnabled := false
+	rustEnabled := false
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -466,7 +550,7 @@ func promptUpgradeConfig() (upgradeConfig, error) {
 			huh.NewConfirm().Title("保留命令入口（bin）").Value(&binPersist),
 			huh.NewConfirm().Title("保留运行环境（env）").Value(&envPersist),
 			huh.NewConfirm().Title("保留 APT 源/Key").Value(&aptPersist),
-			huh.NewConfirm().Title("保留缓存（.npm/go mod）").Value(&cachePersist),
+			huh.NewConfirm().Title("保留缓存（.npm/go mod/cargo）").Value(&cachePersist),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().Title("检查并升级 EasyClaw").Value(&easy),
@@ -474,6 +558,7 @@ func promptUpgradeConfig() (upgradeConfig, error) {
 			huh.NewConfirm().Title("包含 npm").Value(&npmEnabled),
 			huh.NewConfirm().Title("包含 uv").Value(&uvEnabled),
 			huh.NewConfirm().Title("包含 go").Value(&goEnabled),
+			huh.NewConfirm().Title("包含 rust").Value(&rustEnabled),
 		),
 	)
 
@@ -490,7 +575,7 @@ func promptUpgradeConfig() (upgradeConfig, error) {
 	cfg.CachePersistChoice = boolToChoice(cachePersist)
 	cfg.EasyChoice = boolToChoice(easy)
 	cfg.DepsInstallChoice = boolToChoice(depsRepair)
-	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled)
+	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled)
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		cfg.DataDir = defaultDataDirForName(cfg.Name)
 	}
@@ -522,6 +607,8 @@ func writeInstallConfigFile(dir string, cfg installConfig) (string, error) {
 		"TOKEN_MANUAL=" + cfg.TokenManual,
 		"DEPS_INSTALL_CHOICE=" + cfg.DepsInstallChoice,
 		"TARGET_DEPS=" + cfg.TargetDeps,
+		"SOFTWARE_SET=" + cfg.SoftwareSet,
+		"SKILL_SET=" + cfg.SkillSet,
 		"EXTRA_PORTS=" + cfg.ExtraPorts,
 	}
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
@@ -584,6 +671,7 @@ func promptRebuildConfig() (rebuildConfig, error) {
 	npmEnabled := true
 	uvEnabled := true
 	goEnabled := false
+	rustEnabled := false
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -600,13 +688,14 @@ func promptRebuildConfig() (rebuildConfig, error) {
 			huh.NewConfirm().Title("保留命令入口（bin）").Value(&binPersist),
 			huh.NewConfirm().Title("保留运行环境（env）").Value(&envPersist),
 			huh.NewConfirm().Title("保留 APT 源/Key").Value(&aptPersist),
-			huh.NewConfirm().Title("保留缓存（.npm/go mod）").Value(&cachePersist),
+			huh.NewConfirm().Title("保留缓存（.npm/go mod/cargo）").Value(&cachePersist),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().Title("重建后自动补齐依赖").Value(&depsRepair),
 			huh.NewConfirm().Title("包含 npm").Value(&npmEnabled),
 			huh.NewConfirm().Title("包含 uv").Value(&uvEnabled),
 			huh.NewConfirm().Title("包含 go").Value(&goEnabled),
+			huh.NewConfirm().Title("包含 rust").Value(&rustEnabled),
 		),
 	)
 
@@ -619,7 +708,7 @@ func promptRebuildConfig() (rebuildConfig, error) {
 	cfg.APTConfigPersistChoice = boolToChoice(aptPersist)
 	cfg.CachePersistChoice = boolToChoice(cachePersist)
 	cfg.DepsInstallChoice = boolToChoice(depsRepair)
-	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled)
+	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled)
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		cfg.DataDir = defaultDataDirForName(cfg.Name)
 	}
@@ -746,6 +835,7 @@ func promptDepsConfig() (depsConfig, error) {
 	npmEnabled := true
 	uvEnabled := true
 	goEnabled := false
+	rustEnabled := false
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().Title("容器名").Value(&cfg.Name),
@@ -759,6 +849,7 @@ func promptDepsConfig() (depsConfig, error) {
 			huh.NewConfirm().Title("包含 npm").Value(&npmEnabled),
 			huh.NewConfirm().Title("包含 uv").Value(&uvEnabled),
 			huh.NewConfirm().Title("包含 go").Value(&goEnabled),
+			huh.NewConfirm().Title("包含 rust").Value(&rustEnabled),
 		),
 	)
 	if err := form.Run(); err != nil {
@@ -767,7 +858,7 @@ func promptDepsConfig() (depsConfig, error) {
 	if mode == "仅检测" {
 		cfg.Mode = "check"
 	}
-	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled)
+	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled)
 	if strings.TrimSpace(cfg.DataDir) == "" {
 		cfg.DataDir = defaultDataDirForName(cfg.Name)
 	}
@@ -785,6 +876,174 @@ func writeDepsConfigFile(dir string, cfg depsConfig) (string, error) {
 		"DATA_DIR=" + cfg.DataDir,
 		"MODE=" + cfg.Mode,
 		"TARGET_DEPS=" + cfg.TargetDeps,
+	}
+	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		return "", err
+	}
+	return file.Name(), nil
+}
+
+func promptAdoptConfig() (adoptConfig, error) {
+	cfg := adoptConfig{
+		Name: "openclaw_demo",
+	}
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("要接管的容器名").Value(&cfg.Name),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return adoptConfig{}, err
+	}
+	return cfg, nil
+}
+
+func writeAdoptConfigFile(dir string, cfg adoptConfig) (string, error) {
+	file, err := os.CreateTemp(dir, "openclawctl-adopt-*.cfg")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	lines := []string{
+		"NAME=" + cfg.Name,
+	}
+	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		return "", err
+	}
+	return file.Name(), nil
+}
+
+func promptPersistConfig() (persistConfig, error) {
+	cfg := persistConfig{
+		Name:                   "openclaw_demo",
+		Image:                  "ghcr.io/1186258278/openclaw-zh:latest",
+		HostPort:               "4113",
+		ContainerPort:          "18789",
+		DataDir:                "",
+		BinPersistChoice:       "1",
+		EnvPersistChoice:       "1",
+		APTConfigPersistChoice: "1",
+		CachePersistChoice:     "1",
+		DepsInstallChoice:      "1",
+		TargetDeps:             "npm uv",
+		ExtraPorts:             "",
+	}
+
+	npmEnabled := true
+	uvEnabled := true
+	goEnabled := false
+	rustEnabled := false
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("要追加持久化的容器名").Value(&cfg.Name),
+			huh.NewInput().Title("目标镜像（默认复用）").Value(&cfg.Image),
+			huh.NewInput().Title(defaultDataDirHint()).Value(&cfg.DataDir),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("宿主机端口").Value(&cfg.HostPort),
+			huh.NewInput().Title("OpenClaw 容器内部端口").Value(&cfg.ContainerPort),
+			huh.NewInput().Title("扩展端口映射（可留空，如 5001:5001,6000:6000/udp）").Value(&cfg.ExtraPorts),
+		),
+		huh.NewGroup(
+			huh.NewConfirm().Title("包含 npm").Value(&npmEnabled),
+			huh.NewConfirm().Title("包含 uv").Value(&uvEnabled),
+			huh.NewConfirm().Title("包含 go").Value(&goEnabled),
+			huh.NewConfirm().Title("包含 rust").Value(&rustEnabled),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return persistConfig{}, err
+	}
+	cfg.TargetDeps = selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled)
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		cfg.DataDir = defaultDataDirForName(cfg.Name)
+	}
+	return cfg, nil
+}
+
+func writePersistConfigFile(dir string, cfg persistConfig) (string, error) {
+	file, err := os.CreateTemp(dir, "openclawctl-persist-*.cfg")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	lines := []string{
+		"NAME=" + cfg.Name,
+		"IMAGE=" + cfg.Image,
+		"HOST_PORT=" + cfg.HostPort,
+		"CONTAINER_PORT=" + cfg.ContainerPort,
+		"DATA_DIR=" + cfg.DataDir,
+		"BIN_PERSIST_CHOICE=" + cfg.BinPersistChoice,
+		"ENV_PERSIST_CHOICE=" + cfg.EnvPersistChoice,
+		"APT_CFG_PERSIST_CHOICE=" + cfg.APTConfigPersistChoice,
+		"CACHE_PERSIST_CHOICE=" + cfg.CachePersistChoice,
+		"DEPS_INSTALL_CHOICE=" + cfg.DepsInstallChoice,
+		"TARGET_DEPS=" + cfg.TargetDeps,
+		"EXTRA_PORTS=" + cfg.ExtraPorts,
+	}
+	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		return "", err
+	}
+	return file.Name(), nil
+}
+
+func promptNativeConfig() (nativeConfig, error) {
+	cfg := nativeConfig{
+		SourceChoice:  "2",
+		ChannelChoice: "1",
+		OfficialTag:   "",
+		Name:          "openclaw_native",
+		DataDir:       "",
+		NativePrefix:  "",
+	}
+
+	source := "中文版"
+	channel := "稳定版"
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().Title("版本来源").Options(
+				huh.NewOption("官方 npm(openclaw)", "官方"),
+				huh.NewOption("中文版 npm(@qingchencloud/openclaw-zh)", "中文版"),
+			).Value(&source),
+			huh.NewSelect[string]().Title("版本通道").Options(
+				huh.NewOption("稳定版", "稳定版"),
+				huh.NewOption("最新版", "最新版"),
+			).Value(&channel),
+			huh.NewInput().Title("可选指定 tag（留空按通道）").Value(&cfg.OfficialTag),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("应用名（用于配置记录）").Value(&cfg.Name),
+			huh.NewInput().Title(defaultDataDirHint()).Value(&cfg.DataDir),
+			huh.NewInput().Title("npm 安装前缀目录（留空自动用 <data_dir>/native）").Value(&cfg.NativePrefix),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return nativeConfig{}, err
+	}
+	cfg.SourceChoice = mapSourceChoice(source)
+	cfg.ChannelChoice = mapChannelChoice(channel)
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		cfg.DataDir = defaultDataDirForName(cfg.Name)
+	}
+	if strings.TrimSpace(cfg.NativePrefix) == "" {
+		cfg.NativePrefix = filepath.Join(cfg.DataDir, "native")
+	}
+	return cfg, nil
+}
+
+func writeNativeConfigFile(dir string, cfg nativeConfig) (string, error) {
+	file, err := os.CreateTemp(dir, "openclawctl-native-*.cfg")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	lines := []string{
+		"SOURCE_CHOICE=" + cfg.SourceChoice,
+		"CHANNEL_CHOICE=" + cfg.ChannelChoice,
+		"OFFICIAL_TAG=" + cfg.OfficialTag,
+		"NAME=" + cfg.Name,
+		"DATA_DIR=" + cfg.DataDir,
+		"NATIVE_PREFIX=" + cfg.NativePrefix,
 	}
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
 		return "", err
@@ -859,7 +1118,7 @@ func boolToChoice(v bool) string {
 	return "2"
 }
 
-func selectedDeps(npmEnabled, uvEnabled, goEnabled bool) string {
+func selectedDeps(npmEnabled, uvEnabled, goEnabled, rustEnabled bool) string {
 	var deps []string
 	if npmEnabled {
 		deps = append(deps, "npm")
@@ -869,6 +1128,9 @@ func selectedDeps(npmEnabled, uvEnabled, goEnabled bool) string {
 	}
 	if goEnabled {
 		deps = append(deps, "go")
+	}
+	if rustEnabled {
+		deps = append(deps, "rust")
 	}
 	return strings.Join(deps, " ")
 }
