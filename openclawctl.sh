@@ -30,6 +30,16 @@ OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"
 OPTIONAL_SOFTWARE_CATALOG=""
 OPTIONAL_SKILL_CATALOG=""
 
+source "${SCRIPT_DIR}/lib/openclawctl/bootstrap.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/common.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/io.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/image.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/components.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"
+
 strict_noninteractive_mode_enabled() {
   [[ "${OPENCLAWCTL_STRICT_NONINTERACTIVE:-0}" == "1" ]]
 }

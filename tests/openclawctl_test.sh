@@ -31,7 +31,10 @@ assert_not_contains() {
   fi
 }
 
-# 0) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
+# 0) entry script should load modular bootstrap in fixed order
+assert_contains "$(cat "${SCRIPT_PATH}")" 'source "${SCRIPT_DIR}/lib/openclawctl/bootstrap.sh"'
+
+# 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
 fake_tui="${tmpdir}/fake-openclawctl-tui"
