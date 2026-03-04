@@ -46,6 +46,10 @@ assert_contains "${io_default_choice_output}" "2"
 io_sanitized_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c $'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; sanitize_user_input "ab\tcd"' 2>&1 || true)
 assert_contains "${io_sanitized_output}" "abcd"
 
+# 0d) image helpers should fallback missing official tag to nearest available tag
+image_fallback_output=$(OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; official_openclaw_repo_path(){ printf "1panel/openclaw\n"; }; resolve_official_tag_with_fallback "upgrade" "docker.io/1panel/openclaw:260226"' 2>&1 || true)
+assert_contains "${image_fallback_output}" "docker.io/1panel/openclaw:2026.2.26"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
