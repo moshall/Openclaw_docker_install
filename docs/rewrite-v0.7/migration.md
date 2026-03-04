@@ -4,6 +4,13 @@
 - New installer script: `installer/v07/openclaw-install.sh`
 - Legacy script kept intact: `openclawctl.sh`
 
+## openclawctl 模块化（v0.7）
+- `openclawctl.sh` 保持唯一外部入口。
+- 业务函数按职责拆分到 `lib/openclawctl/*.sh`：
+  - `common/io/image/persist/components/deps/ops/wizard`
+- 入口按固定顺序 source 模块，避免隐式依赖。
+- 详细映射见：`docs/rewrite-v0.7/openclawctl-modular-map.md`
+
 ## Config Compatibility
 - v0.7 uses key-value `config.env` inputs (`CFG_*` fields).
 - Strict batch mode:

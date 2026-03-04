@@ -19,6 +19,17 @@
 ```text
 .
 ├── openclawctl.sh              # 主脚本（真实执行入口）
+├── lib/
+│   └── openclawctl/            # openclawctl 模块脚本（按职责拆分）
+│       ├── bootstrap.sh
+│       ├── common.sh
+│       ├── io.sh
+│       ├── image.sh
+│       ├── persist.sh
+│       ├── components.sh
+│       ├── deps.sh
+│       ├── ops.sh
+│       └── wizard.sh
 ├── config/
 │   └── optional-components.conf # 可选软件/Skill 配置目录（可扩展）
 ├── installer/
@@ -41,6 +52,8 @@
 ├── go.sum
 └── README.md
 ```
+
+模块化映射文档：`docs/rewrite-v0.7/openclawctl-modular-map.md`
 
 ## 运行方式
 

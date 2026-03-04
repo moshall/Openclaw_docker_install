@@ -14,6 +14,8 @@
 - [x] `bash tests/installer_v07_1panel_test.sh`
 - [x] `bash tests/openclawctl_test.sh`
 - [x] `GOCACHE=... GOMODCACHE=... go test ./...`
+- [x] 模块映射文档更新：`docs/rewrite-v0.7/openclawctl-modular-map.md`
+- [x] 迁移文档补齐模块化说明：`docs/rewrite-v0.7/migration.md`
 
 ## Real Host Verification
 - [ ] Linux direct Docker install
