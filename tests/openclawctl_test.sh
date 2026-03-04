@@ -63,6 +63,10 @@ deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY
 assert_contains "${deps_manage_output}" "开始检测容器依赖: npm uv go"
 assert_contains "${deps_manage_output}" "依赖检测模式: 仅检测，不安装"
 
+# 0h) ops/wizard modules should expose execution and routing functions
+ops_wizard_symbol_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"; source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"; declare -F execute_install_plan >/dev/null; declare -F run_selected_wizard >/dev/null; echo "ops-wizard-ready"' 2>&1 || true)
+assert_contains "${ops_wizard_symbol_output}" "ops-wizard-ready"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
