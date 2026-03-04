@@ -54,6 +54,10 @@ assert_contains "${image_fallback_output}" "docker.io/1panel/openclaw:2026.2.26"
 persist_easyclaw_mapping_output=$(OPENCLAWCTL_TEST_OCCUPIED_PORTS='4231' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; EASYCLAW_DEFAULT_WEB_PORT=4231; CLAUDECODEUI_RESERVED_CONTAINER_PORT_1=7201; CLAUDECODEUI_RESERVED_CONTAINER_PORT_2=7202; CLAUDECODEUI_RESERVED_CONTAINER_PORT_3=7203; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; ensure_easyclaw_web_port_mapping "1" "4113" "18789" ""' 2>&1 || true)
 assert_contains "${persist_easyclaw_mapping_output}" "5231:4231"
 
+# 0f) components helpers should load optional catalog and resolve labels
+components_catalog_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm easyclaw claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; optional_software_label "easyclaw"' 2>&1 || true)
+assert_contains "${components_catalog_output}" "EasyClaw"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
