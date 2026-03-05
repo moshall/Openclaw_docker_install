@@ -72,6 +72,13 @@ assert_contains "${deps_manage_output}" "依赖检测模式: 仅检测，不安�
 ops_wizard_symbol_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"; source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"; declare -F execute_install_plan >/dev/null; declare -F run_selected_wizard >/dev/null; echo "ops-wizard-ready"' 2>&1 || true)
 assert_contains "${ops_wizard_symbol_output}" "ops-wizard-ready"
 
+# 0i) hostdeps helpers should report native host dependency gaps
+hostdeps_diag_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; OPENCLAWCTL_AUTO_FIX_HOST_DEPS=0; OPENCLAWCTL_TEST_HOST_OS=linux; OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu; OPENCLAWCTL_TEST_HOST_OS_VERSION=20.10; OPENCLAWCTL_TEST_HOST_PM=apt; OPENCLAWCTL_TEST_HOST_NODE_MAJOR=20; OPENCLAWCTL_TEST_HOST_HAS_NPM=0; OPENCLAWCTL_TEST_HOST_CMAKE_VERSION=3.16.3; OPENCLAWCTL_TEST_HOST_HAS_GCC=0; OPENCLAWCTL_TEST_HOST_HAS_GPP=0; OPENCLAWCTL_TEST_HOST_HAS_MAKE=0; OPENCLAWCTL_TEST_HOST_HAS_GIT=0; OPENCLAWCTL_TEST_HOST_HAS_PKG_CONFIG=0; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/hostdeps.sh"; ensure_native_host_dependencies "native-install"' 2>&1 || true)
+assert_contains "${hostdeps_diag_output}" "native 宿主机依赖检查"
+assert_contains "${hostdeps_diag_output}" "Node.js >= 22"
+assert_contains "${hostdeps_diag_output}" "cmake >= 3.19"
+assert_contains "${hostdeps_diag_output}" "build-essential"
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
@@ -488,6 +495,12 @@ EOF
 native_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native --config-file "${native_cfg}")
 assert_contains "${native_output}" "npm install -g --prefix /opt/1panel/apps/openclaw_native_cfg/native @qingchencloud/openclaw-zh@nightly"
 assert_contains "${native_output}" "原生 npm 安装结果"
+
+native_hostdeps_output=$(OPENCLAWCTL_AUTO_FIX_HOST_DEPS=1 OPENCLAWCTL_TEST_HOST_OS=linux OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu OPENCLAWCTL_TEST_HOST_OS_VERSION=20.10 OPENCLAWCTL_TEST_HOST_PM=apt OPENCLAWCTL_TEST_HOST_NODE_MAJOR=20 OPENCLAWCTL_TEST_HOST_HAS_NPM=0 OPENCLAWCTL_TEST_HOST_CMAKE_VERSION=3.16.3 OPENCLAWCTL_TEST_HOST_HAS_GCC=0 OPENCLAWCTL_TEST_HOST_HAS_GPP=0 OPENCLAWCTL_TEST_HOST_HAS_MAKE=0 OPENCLAWCTL_TEST_HOST_HAS_GIT=0 OPENCLAWCTL_TEST_HOST_HAS_PKG_CONFIG=0 OPENCLAWCTL_TEST_HOST_HAS_PYTHON3=0 OPENCLAWCTL_TEST_HOST_HAS_PIP3=0 bash "${SCRIPT_PATH}" --dry-run --wizard native --config-file "${native_cfg}")
+assert_contains "${native_hostdeps_output}" "native 宿主机依赖检查"
+assert_contains "${native_hostdeps_output}" "deb.nodesource.com/setup_22.x"
+assert_contains "${native_hostdeps_output}" "build-essential"
+assert_contains "${native_hostdeps_output}" "python3-pip"
 
 # 20) adopt mode should output inferred config summary in dry-run
 adopt_cfg="${tmpdir}/adopt.cfg"

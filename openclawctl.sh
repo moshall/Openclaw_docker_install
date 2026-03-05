@@ -32,6 +32,7 @@ OPTIONAL_SKILL_CATALOG=""
 
 source "${SCRIPT_DIR}/lib/openclawctl/bootstrap.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/common.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/hostdeps.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/io.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/image.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"
@@ -1387,6 +1388,7 @@ install_docker_if_missing() {
   platform=$(host_platform)
 
   if [[ "${platform}" == "linux" ]]; then
+    hostdeps_warn_if_eol_linux || true
     local install_choice="${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-}"
     if [[ -z "${install_choice}" && is_interactive_session ]]; then
       printf '检测到未安装 Docker，是否自动安装 Docker Engine? (y/N): '
@@ -1397,7 +1399,17 @@ install_docker_if_missing() {
       return 1
     fi
 
+    set +e
     run_cmd sh -lc 'curl -fsSL https://get.docker.com | sh'
+    local docker_install_rc=$?
+    set -e
+    if [[ "${docker_install_rc}" -ne 0 ]]; then
+      log_error "get.docker.com 安装失败，尝试回退为系统包管理器安装 Docker"
+      if ! hostdeps_install_docker_via_package_manager; then
+        log_error "Docker 自动安装失败（含系统包管理器回退）"
+        return 1
+      fi
+    fi
     if command -v systemctl >/dev/null 2>&1; then
       run_cmd systemctl enable --now docker || true
     elif command -v service >/dev/null 2>&1; then
@@ -2423,17 +2435,9 @@ execute_native_install_plan() {
   package_ref="${package_name}"
   [[ -n "${version_tag}" ]] && package_ref="${package_name}@${version_tag}"
 
-  if [[ "${DRY_RUN}" -eq 0 ]]; then
-    local major
-    major=$(detect_node_major)
-    if [[ "${major}" =~ ^[0-9]+$ ]] && (( major < 22 )); then
-      log_error "原生 npm 模式要求 Node.js >= 22，当前版本不满足"
-      return 1
-    fi
-    if ! command -v npm >/dev/null 2>&1; then
-      log_error "未检测到 npm，无法执行原生安装"
-      return 1
-    fi
+  if ! ensure_native_host_dependencies "native-install"; then
+    log_error "宿主机依赖检查未通过，原生 npm 安装已终止"
+    return 1
   fi
 
   run_cmd mkdir -p "${data_dir}" "${native_prefix}"
