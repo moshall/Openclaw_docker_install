@@ -700,7 +700,7 @@ install_base_deps() {
       if [ "$need_python_venv" -eq 1 ]; then
         apt-get install -y python3-venv || true
         if has python3 && ! python_has_venv; then
-          py_minor="$(python3 -c '\''import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'\'' 2>/dev/null || true)"
+          py_minor="$(python3 -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}\")' 2>/dev/null || true)"
           if [ -n "$py_minor" ]; then
             apt-get install -y "python${py_minor}-venv" || true
           fi
