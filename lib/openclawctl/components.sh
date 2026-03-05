@@ -533,6 +533,172 @@ install_selected_software() {
   [[ "${failed}" -eq 0 ]]
 }
 
+host_software_dir() {
+  local data_dir="$1"
+  echo "${data_dir}/software"
+}
+
+install_host_software_gh() {
+  local native_prefix="$1"
+  if [[ "${DRY_RUN}" -eq 0 ]] && command -v gh >/dev/null 2>&1; then
+    log_info "宿主机已存在 gh，跳过安装"
+    return 0
+  fi
+  local script='set -e
+target_bin="'"${native_prefix}"'/bin"
+mkdir -p "$target_bin"
+arch_raw=$(uname -m 2>/dev/null || echo unknown)
+arch="amd64"
+case "$arch_raw" in
+  x86_64|amd64) arch="amd64" ;;
+  aarch64|arm64) arch="arm64" ;;
+esac
+ver=""
+if command -v curl >/dev/null 2>&1; then
+  ver=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest 2>/dev/null | grep -m1 "\"tag_name\":" | sed -E "s/.*\"v?([^\"]+)\".*/\\1/" || true)
+fi
+[ -n "$ver" ] || ver="2.67.0"
+url="https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_${arch}.tar.gz"
+tmpd=$(mktemp -d)
+cleanup() { rm -rf "$tmpd"; }
+trap cleanup EXIT
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$url" -o "$tmpd/gh.tgz"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$tmpd/gh.tgz" "$url"
+else
+  echo "[software] gh install requires curl or wget"
+  exit 1
+fi
+tar -xzf "$tmpd/gh.tgz" -C "$tmpd"
+bin_path=$(find "$tmpd" -type f -path "*/bin/gh" | head -n1)
+[ -n "$bin_path" ] || { echo "[software] gh binary not found in archive"; exit 1; }
+install -m 0755 "$bin_path" "${target_bin}/gh"'
+  run_cmd_brief "host software gh install" bash -lc "${script}"
+}
+
+install_host_software_npm_package() {
+  local native_prefix="$1"
+  local package_name="$2"
+  run_cmd npm install -g --prefix "${native_prefix}" "${package_name}"
+}
+
+install_host_software_notebooklm() {
+  local data_dir="$1"
+  local native_prefix="$2"
+  local python_target
+  python_target="$(host_software_dir "${data_dir}")/python"
+  run_cmd mkdir -p "${python_target}" "${native_prefix}/bin"
+  run_cmd python3 -m pip install --no-cache-dir --target "${python_target}" "notebooklm-py[browser]"
+  local wrapper="${native_prefix}/bin/notebooklm"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd bash -lc "cat > '${wrapper}' <<'EOF'
+#!/usr/bin/env bash
+PYTHONPATH='${python_target}' python3 -m notebooklm \"\$@\"
+EOF"
+    run_cmd chmod +x "${wrapper}"
+    return 0
+  fi
+  cat > "${wrapper}" <<EOF
+#!/usr/bin/env bash
+PYTHONPATH='${python_target}' python3 -m notebooklm "\$@"
+EOF
+  chmod +x "${wrapper}"
+}
+
+install_host_software_easyclaw() {
+  local data_dir="$1"
+  local target
+  target="$(host_software_dir "${data_dir}")/easyclaw"
+  run_cmd mkdir -p "$(host_software_dir "${data_dir}")"
+  if [[ -d "${target}/.git" ]]; then
+    run_cmd git -C "${target}" pull --ff-only
+  else
+    run_cmd git clone --depth=1 "https://github.com/moshall/easyclaw.git" "${target}"
+  fi
+}
+
+install_host_software_guidance_wrapper() {
+  local native_prefix="$1"
+  local command_name="$2"
+  local guidance="$3"
+  local wrapper="${native_prefix}/bin/${command_name}"
+  run_cmd mkdir -p "${native_prefix}/bin"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    run_cmd bash -lc "cat > '${wrapper}' <<'EOF'
+#!/usr/bin/env bash
+echo \"${guidance}\"
+exit 1
+EOF"
+    run_cmd chmod +x "${wrapper}"
+    return 0
+  fi
+  cat > "${wrapper}" <<EOF
+#!/usr/bin/env bash
+echo "${guidance}"
+exit 1
+EOF
+  chmod +x "${wrapper}"
+}
+
+install_selected_software_host() {
+  local data_dir="$1"
+  local native_prefix="$2"
+  local selected
+  selected=$(normalize_software_set "${3:-}")
+  [[ -n "${selected}" ]] || {
+    log_info "未选择可选软件，跳过宿主机安装"
+    return 0
+  }
+
+  local failed=0
+  local token
+  for token in ${selected}; do
+    local kind arg1 arg2
+    kind=$(catalog_field_for_id "software" "${token}" "kind")
+    arg1=$(catalog_field_for_id "software" "${token}" "arg1")
+    arg2=$(catalog_field_for_id "software" "${token}" "arg2")
+    case "${kind}" in
+      gh_binary)
+        install_host_software_gh "${native_prefix}" || failed=1
+        ;;
+      npm_package)
+        if [[ -z "${arg1}" ]]; then
+          log_error "软件定义缺少 npm 参数: ${token}"
+          failed=1
+        else
+          install_host_software_npm_package "${native_prefix}" "${arg1}" || failed=1
+        fi
+        ;;
+      notebooklm)
+        install_host_software_notebooklm "${data_dir}" "${native_prefix}" || failed=1
+        ;;
+      easyclaw)
+        install_host_software_easyclaw "${data_dir}" || failed=1
+        ;;
+      claudecodeui)
+        install_host_software_npm_package "${native_prefix}" "${CLAUDECODEUI_NPM_PACKAGE}" || failed=1
+        install_host_software_npm_package "${native_prefix}" "${TASKMASTER_NPM_PACKAGE}" || failed=1
+        ;;
+      guidance)
+        if [[ -z "${arg1}" ]]; then
+          arg1="该工具依赖桌面环境，当前仅写入说明 wrapper。"
+        fi
+        install_host_software_guidance_wrapper "${native_prefix}" "${token}" "${arg1}" || failed=1
+        ;;
+      "")
+        log_error "未找到软件定义: ${token}"
+        failed=1
+        ;;
+      *)
+        log_error "宿主机模式暂不支持的软件安装类型: ${kind} (${token})"
+        failed=1
+        ;;
+    esac
+  done
+  [[ "${failed}" -eq 0 ]]
+}
+
 skills_workspace_dir() {
   local data_dir="$1"
   echo "${data_dir}/workspace/skills"

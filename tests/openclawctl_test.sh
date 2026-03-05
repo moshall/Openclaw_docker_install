@@ -101,6 +101,9 @@ assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
 
 launcher_shell_output=$(printf '0\n' | OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${launcher_shell_output}" "OpenClaw 部署助手"
+assert_contains "${launcher_shell_output}" "Native 实体机安装与管理"
+assert_contains "${launcher_shell_output}" "Docker 隔离环境安装与管理"
+assert_contains "${launcher_shell_output}" "远程 VPS 1Panel 版 Docker"
 assert_not_contains "${launcher_shell_output}" "FAKE_TUI:"
 
 # 0b) shell should support direct wizard entrypoints for Go delegation
@@ -257,7 +260,7 @@ fi
 assert_contains "${wizard_invalid_output}" "无效的 wizard"
 
 # 1) install wizard: single-screen grouped editing + chinese stable + deps default(npm/uv)
-install_input=$'1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
+install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
 install_output=$(printf "%s" "${install_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${install_output}" "1) 🚀 安装新实例"
@@ -287,7 +290,7 @@ assert_contains "${install_output}" "TOKEN="
 assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 
 # 2) upgrade wizard: single-screen grouped editing + official beta + env persistence(on) + deps include go
-upgrade_input=$'2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
+upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_output}" "2) 🔄 升级已有实例"
@@ -332,21 +335,21 @@ assert_contains "${upgrade_output}" "-p 4231:4231"
 assert_not_contains "${upgrade_output}" "software/easy_cli"
 
 # 3) uninstall wizard: safe mode keeps data directory
-uninstall_safe_input=$'6\nopenclaw_demo\n1\n\nopenclaw_demo\n0\n'
+uninstall_safe_input=$'2\n6\nopenclaw_demo\n1\n\nopenclaw_demo\n0\n'
 uninstall_safe_output=$(printf "%s" "${uninstall_safe_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${uninstall_safe_output}" "docker rm -f openclaw_demo"
 assert_not_contains "${uninstall_safe_output}" "rm -rf /opt/1panel/apps/openclaw_demo"
 
 # 4) uninstall wizard: full mode deletes data directory
-uninstall_full_input=$'6\nopenclaw_demo\n2\n\nopenclaw_demo\n0\n'
+uninstall_full_input=$'2\n6\nopenclaw_demo\n2\n\nopenclaw_demo\n0\n'
 uninstall_full_output=$(printf "%s" "${uninstall_full_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${uninstall_full_output}" "docker rm -f openclaw_demo"
 assert_contains "${uninstall_full_output}" "rm -rf /opt/1panel/apps/openclaw_demo"
 
 # 5) easyclaw-only upgrade
-easy_cli_only_input=$'4\nopenclaw_demo\n\ny\n0\n'
+easy_cli_only_input=$'2\n4\nopenclaw_demo\n\ny\n0\n'
 easy_cli_only_output=$(printf "%s" "${easy_cli_only_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${easy_cli_only_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw fetch --all --prune"
@@ -354,7 +357,7 @@ assert_contains "${easy_cli_only_output}" "git -C /opt/1panel/apps/openclaw_demo
 assert_contains "${easy_cli_only_output}" "docker exec openclaw_demo bash -lc <easyclaw-install-script>"
 
 # 6) upgrade should allow abort when container is detected as running
-upgrade_abort_input=$'2\nopenclaw_demo\n1\n1\n2\nc\nn\nq\n0\n'
+upgrade_abort_input=$'2\n2\nopenclaw_demo\n1\n1\n2\nc\nn\nq\n0\n'
 upgrade_abort_output=$(printf "%s" "${upgrade_abort_input}" | OPENCLAWCTL_RUNNING_STATE=running bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_abort_output}" "检测到容器 openclaw_demo 正在运行，升级会中断当前任务。"
@@ -362,7 +365,7 @@ assert_contains "${upgrade_abort_output}" "已取消"
 assert_not_contains "${upgrade_abort_output}" "docker pull"
 
 # 7) standalone dependency check/install menu (default npm/uv, go optional)
-deps_menu_input=$'5\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
+deps_menu_input=$'2\n5\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
 deps_menu_output=$(printf "%s" "${deps_menu_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${deps_menu_output}" "开始检测容器依赖: npm uv"
@@ -376,20 +379,20 @@ assert_contains "${install_fail_output}" "URL=http://<server-ip>:4113/?token="
 assert_contains "${install_fail_output}" "以下可选步骤失败（主应用已可用）"
 
 # 9) install wizard should support extra port mappings in one run
-install_extra_ports_input=$'1\n1\n2\n1\n2\nopenclaw_ports\n4\n2\n4113\n18789\n5001:5001,6000:6000/udp\nc\ny\n0\n'
+install_extra_ports_input=$'2\n1\n1\n2\n1\n2\nopenclaw_ports\n4\n2\n4113\n18789\n5001:5001,6000:6000/udp\nc\ny\n0\n'
 install_extra_ports_output=$(printf "%s" "${install_extra_ports_input}" | bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_extra_ports_output}" "-p 4113:18789"
 assert_contains "${install_extra_ports_output}" "-p 5001:5001"
 assert_contains "${install_extra_ports_output}" "-p 6000:6000/udp"
 
 # 10) extra ports input should ignore control chars and not corrupt menu output
-install_extra_ports_ctrl_input=$'1\n1\n2\n1\n2\nopenclaw_ports_ctrl\n4\n2\n4113\n18789\n5002:5002\e[D\e[A\nc\ny\n0\n'
+install_extra_ports_ctrl_input=$'2\n1\n1\n2\n1\n2\nopenclaw_ports_ctrl\n4\n2\n4113\n18789\n5002:5002\e[D\e[A\nc\ny\n0\n'
 install_extra_ports_ctrl_output=$(printf "%b" "${install_extra_ports_ctrl_input}" | bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_extra_ports_ctrl_output}" "-p 5002:5002"
 assert_not_contains "${install_extra_ports_ctrl_output}" $'\e'
 
 # 11) install should support optional apt-config/cache persistence mounts
-install_ext_persist_input=$'1\n1\n2\n1\n2\nopenclaw_extpersist\n3\n/opt/1panel/apps/openclaw_extpersist\n1\n2\n1\n1\nc\ny\n0\n'
+install_ext_persist_input=$'2\n1\n1\n2\n1\n2\nopenclaw_extpersist\n3\n/opt/1panel/apps/openclaw_extpersist\n1\n2\n1\n1\nc\ny\n0\n'
 install_ext_persist_output=$(printf "%s" "${install_ext_persist_input}" | bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_ext_persist_output}" "/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d"
 assert_contains "${install_ext_persist_output}" "/runtime/etc-apt-keyrings:/etc/apt/keyrings"
@@ -397,7 +400,7 @@ assert_contains "${install_ext_persist_output}" "/runtime/root-npm-cache:/root/.
 assert_contains "${install_ext_persist_output}" "/runtime/root-go-pkg-mod:/root/go/pkg/mod"
 
 # 12) safe rebuild should run migration then recreate container
-rebuild_input=$'3\nopenclaw_rebuild\nc\ny\n0\n'
+rebuild_input=$'2\n3\nopenclaw_rebuild\nc\ny\n0\n'
 rebuild_output=$(printf "%s" "${rebuild_input}" | OPENCLAWCTL_TEST_CURRENT_IMAGE=ghcr.io/1186258278/openclaw-zh:latest bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${rebuild_output}" "3) 🛠️ 调整或重建实例"
 assert_contains "${rebuild_output}" "=== 🛠️ 调整或重建实例：openclaw_rebuild ==="
@@ -409,14 +412,14 @@ assert_contains "${rebuild_output}" "-p 4231:4231"
 assert_contains "${rebuild_output}" "docker exec openclaw_rebuild sh -lc <runtime-path-repair-script>"
 
 # 13) install should support official source custom tag selection via fetched tags
-install_official_tag_input=$'1\n1\n1\n3\n3\n2\nopenclaw_official_tag\nc\ny\n0\n'
+install_official_tag_input=$'2\n1\n1\n1\n3\n3\n2\nopenclaw_official_tag\nc\ny\n0\n'
 install_official_tag_output=$(printf "%s" "${install_official_tag_input}" | OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_official_tag_output}" "docker pull docker.io/1panel/openclaw:2026.2.26"
 assert_contains "${install_official_tag_output}" "镜像: docker.io/1panel/openclaw:2026.2.26"
 
 # 14) default data root should follow OPENCLAWCTL_DATA_ROOT
 custom_data_root="${tmpdir}/custom-data-root"
-install_custom_root_input=$'1\n1\n2\n1\n2\nopenclaw_custom_root\nc\ny\n0\n'
+install_custom_root_input=$'2\n1\n1\n2\n1\n2\nopenclaw_custom_root\nc\ny\n0\n'
 install_custom_root_output=$(printf "%s" "${install_custom_root_input}" | OPENCLAWCTL_DATA_ROOT="${custom_data_root}" bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${install_custom_root_output}" "持久化目录: ${custom_data_root}/openclaw_custom_root"
 
@@ -498,9 +501,18 @@ OFFICIAL_TAG=
 NAME=openclaw_native_cfg
 DATA_DIR=/opt/1panel/apps/openclaw_native_cfg
 NATIVE_PREFIX=/opt/1panel/apps/openclaw_native_cfg/native
+SOFTWARE_SET=codex,gh
+SKILL_SET=obsidian-skills
 EOF
 native_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native --config-file "${native_cfg}")
 assert_contains "${native_output}" "npm install -g --prefix /opt/1panel/apps/openclaw_native_cfg/native @qingchencloud/openclaw-zh@nightly"
+assert_contains "${native_output}" "npm install -g --prefix /opt/1panel/apps/openclaw_native_cfg/native @openai/codex"
+assert_contains "${native_output}" "[RUN] host software gh install"
+assert_contains "${native_output}" "git clone --depth=1 https://github.com/kepano/obsidian-skills.git /opt/1panel/apps/openclaw_native_cfg/workspace/skills/obsidian-skills"
+assert_contains "${native_output}" "可选软件："
+assert_contains "${native_output}" "Codex CLI"
+assert_contains "${native_output}" "GitHub CLI(gh)"
+assert_contains "${native_output}" "Skills：Obsidian Skills"
 assert_contains "${native_output}" "原生 npm 安装结果"
 
 native_hostdeps_output=$(OPENCLAWCTL_AUTO_FIX_HOST_DEPS=1 OPENCLAWCTL_TEST_HOST_OS=linux OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu OPENCLAWCTL_TEST_HOST_OS_VERSION=20.10 OPENCLAWCTL_TEST_HOST_PM=apt OPENCLAWCTL_TEST_HOST_NODE_MAJOR=20 OPENCLAWCTL_TEST_HOST_HAS_NPM=0 OPENCLAWCTL_TEST_HOST_CMAKE_VERSION=3.16.3 OPENCLAWCTL_TEST_HOST_HAS_GCC=0 OPENCLAWCTL_TEST_HOST_HAS_GPP=0 OPENCLAWCTL_TEST_HOST_HAS_MAKE=0 OPENCLAWCTL_TEST_HOST_HAS_GIT=0 OPENCLAWCTL_TEST_HOST_HAS_PKG_CONFIG=0 OPENCLAWCTL_TEST_HOST_HAS_PYTHON3=0 OPENCLAWCTL_TEST_HOST_HAS_PIP3=0 bash "${SCRIPT_PATH}" --dry-run --wizard native --config-file "${native_cfg}")
@@ -508,6 +520,14 @@ assert_contains "${native_hostdeps_output}" "native 宿主机依赖检查"
 assert_contains "${native_hostdeps_output}" "deb.nodesource.com/setup_22.x"
 assert_contains "${native_hostdeps_output}" "build-essential"
 assert_contains "${native_hostdeps_output}" "python3-pip"
+
+# 19b) 1panel wizard should support linux dry-run install and reject non-linux
+panel_install_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-install <<< $'y\n')
+assert_contains "${panel_install_linux_output}" "=== 📥 安装 1Panel ==="
+assert_contains "${panel_install_linux_output}" "quick_start.sh"
+
+panel_install_nonlinux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=darwin bash "${SCRIPT_PATH}" --dry-run --wizard panel-install 2>&1 || true)
+assert_contains "${panel_install_nonlinux_output}" "1Panel 安装仅支持 Linux 主机"
 
 # 20) adopt mode should output inferred config summary in dry-run
 adopt_cfg="${tmpdir}/adopt.cfg"

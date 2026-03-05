@@ -55,6 +55,10 @@ deployment_info_path() {
 }
 
 host_platform() {
+  if [[ -n "${OPENCLAWCTL_TEST_HOST_PLATFORM:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TEST_HOST_PLATFORM}"
+    return
+  fi
   local os
   os=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
   case "${os}" in
@@ -2458,6 +2462,8 @@ execute_native_install_plan() {
   local app_name="$4"
   local data_dir="$5"
   local native_prefix="$6"
+  local software_set="${7:-}"
+  local skill_set="${8:-}"
 
   local package_name version_tag package_ref
   package_name=$(native_package_for_source_choice "${source_choice}")
@@ -2473,6 +2479,21 @@ execute_native_install_plan() {
   run_cmd mkdir -p "${data_dir}" "${native_prefix}"
   run_cmd npm install -g --prefix "${native_prefix}" "${package_ref}"
 
+  software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(normalize_skill_set "${skill_set}")
+  if [[ -n "${software_set}" ]]; then
+    if ! run_optional_step "宿主机可选软件安装" install_selected_software_host "${data_dir}" "${native_prefix}" "${software_set}"; then
+      log_error "宿主机可选软件安装存在告警，可稍后重试"
+    fi
+  fi
+  if [[ -n "${skill_set}" ]]; then
+    if ! run_optional_step "Skill 安装" install_selected_skills "${data_dir}" "${skill_set}"; then
+      log_error "Skill 安装存在告警，可稍后重试"
+    fi
+  fi
+  save_software_profile "${data_dir}" "${software_set}"
+  save_skill_profile "${data_dir}" "${skill_set}"
+
   local native_status="success"
   write_last_report "native-install" "${native_status}" "${app_name}" "${data_dir}" "${package_ref}" "" "" "" "" ""
   printf '\n===============================\n'
@@ -2482,6 +2503,8 @@ execute_native_install_plan() {
   echo "包名：${package_ref}"
   echo "数据目录：${data_dir}"
   echo "安装前缀：${native_prefix}"
+  echo "可选软件：$(software_set_summary "${software_set}")"
+  echo "Skills：$(skill_set_summary "${skill_set}")"
   echo "启动示例：PATH=${native_prefix}/bin:\$PATH OPENCLAW_HOME=${data_dir} openclaw gateway run"
   echo "==============================="
 }
@@ -2493,13 +2516,90 @@ run_native_from_config_file() {
   NAME_CFG="openclaw_native"
   DATA_DIR_CFG=""
   NATIVE_PREFIX_CFG=""
+  SOFTWARE_SET_CFG=""
+  SKILL_SET_CFG=""
 
   load_simple_config_file "${CONFIG_FILE}"
 
   local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
   local native_prefix="${NATIVE_PREFIX_CFG:-${data_dir}/native}"
+  local software_set
+  software_set=$(normalize_software_set "${SOFTWARE_SET_CFG}")
+  local skill_set
+  skill_set=$(normalize_skill_set "${SKILL_SET_CFG}")
 
-  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}"
+  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}"
+}
+
+run_1panel_quickstart_script() {
+  local mode="${1:-install}"
+  local script_url="${OPENCLAWCTL_1PANEL_SCRIPT_URL:-https://resource.fit2cloud.com/1panel/package/quick_start.sh}"
+  local install_cmd=(bash -lc "curl -fsSL '${script_url}' | bash")
+  if ! command -v curl >/dev/null 2>&1; then
+    install_cmd=(bash -lc "wget -qO- '${script_url}' | bash")
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    if [[ "${mode}" == "repair" ]]; then
+      log_info "将执行 1Panel 修复命令: $(print_cmd "${install_cmd[@]}")"
+    else
+      log_info "将执行 1Panel 安装命令: $(print_cmd "${install_cmd[@]}")"
+    fi
+    return 0
+  fi
+
+  run_cmd "${install_cmd[@]}"
+}
+
+panel_install_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel 安装仅支持 Linux 主机"
+    return 1
+  fi
+  if [[ "${DRY_RUN}" -eq 0 && "${EUID}" -ne 0 ]]; then
+    log_error "1Panel 安装需要 root 权限，请使用 sudo/root 运行"
+    return 1
+  fi
+
+  printf '\n=== 📥 安装 1Panel ===\n'
+  echo "将使用官方 quick_start 脚本安装 1Panel。"
+  printf '确认执行? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return 0
+  fi
+
+  run_1panel_quickstart_script "install"
+}
+
+panel_repair_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel 修复仅支持 Linux 主机"
+    return 1
+  fi
+  if [[ "${DRY_RUN}" -eq 0 && "${EUID}" -ne 0 ]]; then
+    log_error "1Panel 修复需要 root 权限，请使用 sudo/root 运行"
+    return 1
+  fi
+
+  printf '\n=== 🔧 升级/修复 1Panel ===\n'
+  if command -v 1panel >/dev/null 2>&1; then
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      run_cmd 1panel version
+      run_cmd 1panel update
+      return 0
+    fi
+    if ! run_cmd 1panel update; then
+      log_error "1panel update 执行失败，尝试官方修复脚本"
+      run_1panel_quickstart_script "repair"
+    fi
+    return 0
+  fi
+
+  log_error "未检测到 1panel 命令，尝试官方修复脚本"
+  run_1panel_quickstart_script "repair"
 }
 
 native_npm_wizard() {
@@ -2509,13 +2609,15 @@ native_npm_wizard() {
   fi
 
   printf '\n=== 🧪 原生 npm 安装 ===\n'
-  local source_choice channel_choice explicit_tag name data_dir native_prefix
+  local source_choice channel_choice explicit_tag name data_dir native_prefix software_set skill_set
   source_choice="2"
   channel_choice="1"
   explicit_tag=""
   name="openclaw_native"
   data_dir="$(default_data_dir_for_name "${name}")"
   native_prefix="${data_dir}/native"
+  software_set=""
+  skill_set=""
 
   echo "版本来源:"
   echo "  1) 官方 npm(openclaw)"
@@ -2536,6 +2638,10 @@ native_npm_wizard() {
   name=$(read_container_name "应用名（仅用于配置记录）")
   data_dir=$(read_with_default "数据目录" "${data_dir}")
   native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
+  software_set=$(read_with_default "可选软件（逗号或空格分隔，如 gh,codex）" "${software_set}")
+  skill_set=$(read_with_default "预装 Skills（逗号或空格分隔，如 obsidian-skills）" "${skill_set}")
+  software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(normalize_skill_set "${skill_set}")
 
   printf '\n--- 执行清单（确认前） ---\n'
   echo "来源: $(source_choice_label "${source_choice}")"
@@ -2544,6 +2650,8 @@ native_npm_wizard() {
   echo "应用名: ${name}"
   echo "数据目录: ${data_dir}"
   echo "安装前缀: ${native_prefix}"
+  echo "可选软件: $(software_set_summary "${software_set}")"
+  echo "Skills: $(skill_set_summary "${skill_set}")"
   printf '确认执行? (y/N): '
   local confirm
   IFS= read -r confirm
@@ -2552,7 +2660,7 @@ native_npm_wizard() {
     return
   fi
 
-  execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}"
+  execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}"
 }
 
 default_adopt_config_path() {
