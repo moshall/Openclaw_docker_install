@@ -174,6 +174,25 @@ func run(args []string) int {
 	if mode == interactionModeShell {
 		return execShell(shellScript, "", dryRun, "")
 	}
+	if mode == interactionModeEnhancedTUI {
+		submission, err := runEnhancedSubmission(dryRun)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "增强 TUI 启动失败，回退标准表单: %v\n", err)
+		} else {
+			if submission.Action == "quit" {
+				return 0
+			}
+			cfgPath, cfgErr := writeConfigForEnhancedAction(os.TempDir(), submission)
+			if cfgErr != nil {
+				fmt.Fprintf(os.Stderr, "增强 TUI 配置生成失败: %v\n", cfgErr)
+				return 1
+			}
+			if cfgPath != "" {
+				defer os.Remove(cfgPath)
+			}
+			return execShell(shellScript, submission.Action, dryRun, cfgPath)
+		}
+	}
 
 	action, err := promptAction()
 	if err != nil {
