@@ -308,6 +308,41 @@ func TestSelectedDepsSupportsRust(t *testing.T) {
 	}
 }
 
+func TestWriteNativeConfigFileIncludesSoftwareAndSkills(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := nativeConfig{
+		SourceChoice:  "2",
+		ChannelChoice: "1",
+		OfficialTag:   "",
+		Name:          "openclaw_native_cfg",
+		DataDir:       "/opt/1panel/apps/openclaw_native_cfg",
+		NativePrefix:  "/opt/1panel/apps/openclaw_native_cfg/native",
+		SoftwareSet:   "gh codex",
+		SkillSet:      "obsidian-skills",
+	}
+
+	path, err := writeNativeConfigFile(dir, cfg)
+	if err != nil {
+		t.Fatalf("writeNativeConfigFile returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read native config file: %v", err)
+	}
+	content := string(data)
+	for _, needle := range []string{
+		"NAME=openclaw_native_cfg",
+		"SOFTWARE_SET=gh codex",
+		"SKILL_SET=obsidian-skills",
+	} {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("expected native config file to contain %q, got:\n%s", needle, content)
+		}
+	}
+}
+
 func TestResolveInteractionModeFallsBackToShellWithoutTTY(t *testing.T) {
 	t.Parallel()
 

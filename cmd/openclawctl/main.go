@@ -119,6 +119,8 @@ type nativeConfig struct {
 	Name          string
 	DataDir       string
 	NativePrefix  string
+	SoftwareSet   string
+	SkillSet      string
 }
 
 type interactionMode int
@@ -1046,6 +1048,8 @@ func promptNativeConfig() (nativeConfig, error) {
 		Name:          "openclaw_native",
 		DataDir:       "",
 		NativePrefix:  "",
+		SoftwareSet:   "",
+		SkillSet:      "",
 	}
 
 	source := "中文版"
@@ -1066,6 +1070,8 @@ func promptNativeConfig() (nativeConfig, error) {
 			huh.NewInput().Title("应用名（用于配置记录）").Value(&cfg.Name),
 			huh.NewInput().Title(defaultDataDirHint()).Value(&cfg.DataDir),
 			huh.NewInput().Title("npm 安装前缀目录（留空自动用 <data_dir>/native）").Value(&cfg.NativePrefix),
+			huh.NewInput().Title("可选软件（逗号或空格分隔，如 gh,codex）").Value(&cfg.SoftwareSet),
+			huh.NewInput().Title("预装 Skills（逗号或空格分隔，如 obsidian-skills）").Value(&cfg.SkillSet),
 		),
 	)
 	if err := form.Run(); err != nil {
@@ -1095,6 +1101,8 @@ func writeNativeConfigFile(dir string, cfg nativeConfig) (string, error) {
 		"NAME=" + cfg.Name,
 		"DATA_DIR=" + cfg.DataDir,
 		"NATIVE_PREFIX=" + cfg.NativePrefix,
+		"SOFTWARE_SET=" + cfg.SoftwareSet,
+		"SKILL_SET=" + cfg.SkillSet,
 	}
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
 		return "", err

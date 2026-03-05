@@ -157,6 +157,8 @@ func buildEnhancedForms() map[string]tui.Form {
 				{Key: "name", Label: "应用名", Type: tui.FieldTypeText, Value: "openclaw_native"},
 				{Key: "data_dir", Label: "持久化目录", Type: tui.FieldTypeText, Value: ""},
 				{Key: "native_prefix", Label: "npm 安装前缀", Type: tui.FieldTypeText, Value: ""},
+				{Key: "software_set", Label: "可选软件", Type: tui.FieldTypeText, Value: ""},
+				{Key: "skill_set", Label: "预装 Skills", Type: tui.FieldTypeText, Value: ""},
 			},
 		},
 		"uninstall": {
@@ -306,6 +308,8 @@ func writeConfigForEnhancedAction(dir string, submission enhancedSubmission) (st
 			Name:          valueOr(submission.Values, "name", "openclaw_native"),
 			DataDir:       valueOr(submission.Values, "data_dir", ""),
 			NativePrefix:  valueOr(submission.Values, "native_prefix", ""),
+			SoftwareSet:   valueOr(submission.Values, "software_set", ""),
+			SkillSet:      valueOr(submission.Values, "skill_set", ""),
 		}
 		if strings.TrimSpace(cfg.DataDir) == "" {
 			cfg.DataDir = defaultDataDirForName(cfg.Name)
@@ -338,4 +342,3 @@ func valueOr(values map[string]string, key, fallback string) string {
 	}
 	return fallback
 }
-
