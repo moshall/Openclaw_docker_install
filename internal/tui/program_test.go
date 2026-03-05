@@ -48,6 +48,24 @@ func TestProgramEnterOnTextFieldStartsEditing(t *testing.T) {
 	if !updated.Editor.Editing {
 		t.Fatalf("expected enter to start editing on text field")
 	}
+	if !updated.TextInput.Focused() {
+		t.Fatalf("expected text input to be focused in editing mode")
+	}
+}
+
+func TestProgramTypingOnTextFieldStartsEditing(t *testing.T) {
+	t.Parallel()
+
+	model := NewProgramModel(buildTestEditor(), true)
+	model.Focus = FocusFields
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	updated := next.(ProgramModel)
+	if !updated.Editor.Editing {
+		t.Fatalf("expected typing to start editing mode")
+	}
+	if got := updated.TextInput.Value(); got != "openclaw_demox" {
+		t.Fatalf("expected typed rune appended into buffer, got %q", got)
+	}
 }
 
 func TestProgramViewDoesNotAccumulateFocusSuffix(t *testing.T) {

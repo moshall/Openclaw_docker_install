@@ -68,10 +68,12 @@ func (m ProgramModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				m.Editor.ApplyEditValue(m.TextInput.Value())
+				m.TextInput.Blur()
 				return m, nil
 			case "esc":
 				m.Editor.Editing = false
 				m.Editor.EditBuffer = ""
+				m.TextInput.Blur()
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -129,16 +131,33 @@ func (m ProgramModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch field.Type {
 			case FieldTypeText:
-				m.Editor.BeginEdit()
-				m.TextInput.SetValue(field.Value)
-				m.TextInput.CursorEnd()
-				return m, textinput.Blink
+				return m.startTextEditing(field, nil)
 			case FieldTypeSelect, FieldTypeToggle:
 				m.Editor.CycleCurrentField(1)
+			}
+		default:
+			if m.Focus == FocusFields && msg.Type == tea.KeyRunes {
+				field := m.Editor.CurrentField()
+				if field != nil && field.Type == FieldTypeText {
+					return m.startTextEditing(field, &msg)
+				}
 			}
 		}
 	}
 	return m, nil
+}
+
+func (m ProgramModel) startTextEditing(field *Field, initialMsg *tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.Editor.BeginEdit()
+	m.TextInput.SetValue(field.Value)
+	m.TextInput.CursorEnd()
+	focusCmd := m.TextInput.Focus()
+	if initialMsg != nil {
+		var updateCmd tea.Cmd
+		m.TextInput, updateCmd = m.TextInput.Update(*initialMsg)
+		return m, tea.Batch(focusCmd, updateCmd)
+	}
+	return m, tea.Batch(focusCmd, textinput.Blink)
 }
 
 func (m ProgramModel) View() string {
