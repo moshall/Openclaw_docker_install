@@ -353,6 +353,18 @@ enforce_strict_noninteractive_mode() {
   fi
 }
 
+announce_startup_progress() {
+  if ! is_interactive_session; then
+    return 0
+  fi
+
+  log_info "系统环境检测中用于匹配功能..."
+  if [[ "${OPENCLAWCTL_FORCE_SHELL:-0}" == "1" ]]; then
+    return 0
+  fi
+  log_info "正在构建TUI菜单中，即将呈现..."
+}
+
 resolve_tui_binary() {
   if [[ -n "${OPENCLAWCTL_TUI_BIN}" && -x "${OPENCLAWCTL_TUI_BIN}" ]]; then
     printf '%s\n' "${OPENCLAWCTL_TUI_BIN}"
@@ -418,6 +430,7 @@ maybe_exec_tui() {
     return 1
   fi
 
+  clear_interactive_screen
   OPENCLAWCTL_TUI_ACTIVE=1 exec "${tui_bin}" --shell-script "$0" "$@"
 }
 
@@ -3529,6 +3542,7 @@ deps_manage_wizard() {
 load_optional_component_catalog
 parse_global_flags "$@"
 enforce_strict_noninteractive_mode
+announce_startup_progress
 maybe_exec_tui "$@" || true
 if [[ -n "${SELECTED_WIZARD}" ]]; then
   run_selected_wizard

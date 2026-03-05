@@ -91,6 +91,9 @@ chmod +x "${fake_tui}"
 
 launcher_tui_output=$(OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run 2>&1 || true)
 assert_contains "${launcher_tui_output}" "FAKE_TUI:"
+assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功能"
+assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
+assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
 
 launcher_shell_output=$(printf '0\n' | OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${launcher_shell_output}" "OpenClaw 部署助手"

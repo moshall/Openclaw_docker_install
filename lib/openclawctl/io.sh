@@ -66,7 +66,10 @@ read_menu_choice() {
 }
 
 clear_interactive_screen() {
-  if [[ -t 1 && "${OPENCLAWCTL_NO_CLEAR:-0}" != "1" ]]; then
+  if [[ "${OPENCLAWCTL_NO_CLEAR:-0}" == "1" ]]; then
+    return
+  fi
+  if [[ "${OPENCLAWCTL_ASSUME_TTY:-0}" == "1" || -t 1 ]]; then
     printf '\033[H\033[2J'
   fi
 }
