@@ -125,21 +125,15 @@ func newTheme(profile ColorProfile) theme {
 	accent := lipgloss.Color("5")
 	headerAccent := lipgloss.Color("7")
 	border := lipgloss.Color("8")
-	text := lipgloss.Color("15")
-	subtle := lipgloss.Color("7")
 	switch profile {
 	case ColorProfileTrueColor:
 		accent = lipgloss.Color("#7C4DFF")
 		headerAccent = lipgloss.Color("#F5F5F7")
 		border = lipgloss.Color("#343641")
-		text = lipgloss.Color("#EDEEF2")
-		subtle = lipgloss.Color("#A0A7B4")
 	case ColorProfileANSI256:
 		accent = lipgloss.Color("99")
 		headerAccent = lipgloss.Color("255")
 		border = lipgloss.Color("239")
-		text = lipgloss.Color("252")
-		subtle = lipgloss.Color("246")
 	}
 
 	cardStyle := lipgloss.NewStyle().
@@ -155,15 +149,11 @@ func newTheme(profile ColorProfile) theme {
 			Padding(0, 1),
 		card:      cardStyle,
 		cardTitle: lipgloss.NewStyle().Bold(true).Foreground(accent),
-		menuNormal: lipgloss.NewStyle().
-			Foreground(text),
+		menuNormal: lipgloss.NewStyle(),
 		menuActive: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(accent),
-		contentText: lipgloss.NewStyle().
-			Foreground(text),
-		statusText: lipgloss.NewStyle().
-			Foreground(subtle),
+		contentText: lipgloss.NewStyle(),
+		statusText:  lipgloss.NewStyle(),
 	}
 }
-

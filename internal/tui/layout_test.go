@@ -64,6 +64,18 @@ func TestLayoutViewMarksSelectedAction(t *testing.T) {
 	}
 }
 
+func TestThemeUsesTerminalDefaultForegroundForBodyText(t *testing.T) {
+	t.Parallel()
+
+	theme := newTheme(ColorProfileTrueColor)
+	if got := theme.menuNormal.Render("sample"); got != "sample" {
+		t.Fatalf("expected menu normal render without forced color, got %q", got)
+	}
+	if got := theme.contentText.Render("sample"); got != "sample" {
+		t.Fatalf("expected content text render without forced color, got %q", got)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(needle) == 0 || (len(haystack) >= len(needle) && stringContains(haystack, needle))
 }
@@ -76,4 +88,3 @@ func stringContains(haystack, needle string) bool {
 	}
 	return false
 }
-
