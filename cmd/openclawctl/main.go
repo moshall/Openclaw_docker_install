@@ -121,6 +121,14 @@ type nativeConfig struct {
 	NativePrefix  string
 }
 
+type interactionMode int
+
+const (
+	interactionModeShell interactionMode = iota
+	interactionModeLegacyForm
+	interactionModeEnhancedTUI
+)
+
 const officialOpenclawRepoDefault = "1panel/openclaw"
 
 func actionOptions() []actionOption {
@@ -157,7 +165,13 @@ func run(args []string) int {
 		return 1
 	}
 
-	if app.ShouldFallbackToShell(stdinIsTTY(), stdoutIsTTY()) {
+	mode := resolveInteractionMode(
+		stdinIsTTY(),
+		stdoutIsTTY(),
+		os.Getenv("TERM"),
+		os.Getenv("OPENCLAWCTL_ENHANCED_TUI"),
+	)
+	if mode == interactionModeShell {
 		return execShell(shellScript, "", dryRun, "")
 	}
 
@@ -300,6 +314,24 @@ func run(args []string) int {
 	}
 
 	return execShell(shellScript, action, dryRun, "")
+}
+
+func resolveInteractionMode(stdinTTY, stdoutTTY bool, termName, enhancedFlag string) interactionMode {
+	if app.ShouldFallbackToShell(stdinTTY, stdoutTTY) {
+		return interactionModeShell
+	}
+	if strings.TrimSpace(enhancedFlag) == "0" {
+		return interactionModeLegacyForm
+	}
+	if !terminalSupportsEnhancedTUI(termName) {
+		return interactionModeLegacyForm
+	}
+	return interactionModeEnhancedTUI
+}
+
+func terminalSupportsEnhancedTUI(termName string) bool {
+	term := strings.ToLower(strings.TrimSpace(termName))
+	return term != "" && term != "dumb"
 }
 
 func defaultShellScriptPath() string {

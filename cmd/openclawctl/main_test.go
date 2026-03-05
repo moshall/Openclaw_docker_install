@@ -307,3 +307,39 @@ func TestSelectedDepsSupportsRust(t *testing.T) {
 		t.Fatalf("unexpected rust-only deps: %q", got)
 	}
 }
+
+func TestResolveInteractionModeFallsBackToShellWithoutTTY(t *testing.T) {
+	t.Parallel()
+
+	mode := resolveInteractionMode(false, true, "xterm-256color", "1")
+	if mode != interactionModeShell {
+		t.Fatalf("expected shell mode, got %v", mode)
+	}
+}
+
+func TestResolveInteractionModeFallsBackToLegacyOnDumbTerm(t *testing.T) {
+	t.Parallel()
+
+	mode := resolveInteractionMode(true, true, "dumb", "1")
+	if mode != interactionModeLegacyForm {
+		t.Fatalf("expected legacy mode on dumb term, got %v", mode)
+	}
+}
+
+func TestResolveInteractionModeUsesEnhancedOnCapableTerminal(t *testing.T) {
+	t.Parallel()
+
+	mode := resolveInteractionMode(true, true, "xterm-256color", "1")
+	if mode != interactionModeEnhancedTUI {
+		t.Fatalf("expected enhanced mode on capable term, got %v", mode)
+	}
+}
+
+func TestResolveInteractionModeRespectsDisableFlag(t *testing.T) {
+	t.Parallel()
+
+	mode := resolveInteractionMode(true, true, "xterm-256color", "0")
+	if mode != interactionModeLegacyForm {
+		t.Fatalf("expected legacy mode when disabled, got %v", mode)
+	}
+}
