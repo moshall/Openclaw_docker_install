@@ -365,6 +365,23 @@ announce_startup_progress() {
   log_info "正在构建TUI菜单中，即将呈现..."
 }
 
+is_tui_binary_up_to_date() {
+  local root_dir="$1"
+  local output_bin="$2"
+  local go_mod="$3"
+  local go_sum="$4"
+
+  [[ -x "${output_bin}" && -f "${go_mod}" ]] || return 1
+  [[ "${output_bin}" -nt "${go_mod}" ]] || return 1
+  if [[ -f "${go_sum}" && "${output_bin}" -ot "${go_sum}" ]]; then
+    return 1
+  fi
+
+  local newer_go_source=""
+  newer_go_source=$(find "${root_dir}/cmd" "${root_dir}/internal" -type f -name '*.go' -newer "${output_bin}" -print -quit 2>/dev/null || true)
+  [[ -z "${newer_go_source}" ]]
+}
+
 resolve_tui_binary() {
   if [[ -n "${OPENCLAWCTL_TUI_BIN}" && -x "${OPENCLAWCTL_TUI_BIN}" ]]; then
     printf '%s\n' "${OPENCLAWCTL_TUI_BIN}"
@@ -372,6 +389,12 @@ resolve_tui_binary() {
   fi
   local root_dir
   root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  local built_tui_bin
+  if built_tui_bin=$(build_tui_binary_if_possible "${root_dir}"); then
+    printf '%s\n' "${built_tui_bin}"
+    return 0
+  fi
+
   local candidate
   for candidate in \
     "${root_dir}/.bin/openclawctl" \
@@ -382,11 +405,6 @@ resolve_tui_binary() {
       return 0
     fi
   done
-
-  if built_tui_bin=$(build_tui_binary_if_possible "${root_dir}"); then
-    printf '%s\n' "${built_tui_bin}"
-    return 0
-  fi
   return 1
 }
 
@@ -398,9 +416,7 @@ build_tui_binary_if_possible() {
   local go_sum="${root_dir}/go.sum"
 
   [[ -f "${source_file}" && -f "${go_mod}" ]] || return 1
-  command -v go >/dev/null 2>&1 || return 1
-
-  if [[ -x "${output_bin}" && "${output_bin}" -nt "${source_file}" && "${output_bin}" -nt "${go_mod}" && ( ! -f "${go_sum}" || "${output_bin}" -nt "${go_sum}" ) ]]; then
+  if is_tui_binary_up_to_date "${root_dir}" "${output_bin}" "${go_mod}" "${go_sum}"; then
     printf '%s\n' "${output_bin}"
     return 0
   fi
@@ -408,6 +424,7 @@ build_tui_binary_if_possible() {
   if [[ "${OPENCLAWCTL_DISABLE_TUI_BUILD:-0}" == "1" ]]; then
     return 1
   fi
+  command -v go >/dev/null 2>&1 || return 1
 
   mkdir -p "${root_dir}/.bin" "${root_dir}/.gocache" "${root_dir}/.gomodcache"
   if GOCACHE="${root_dir}/.gocache" GOMODCACHE="${root_dir}/.gomodcache" GOTOOLCHAIN=auto go build -o "${output_bin}" "${root_dir}/cmd/openclawctl" >/dev/null 2>&1; then

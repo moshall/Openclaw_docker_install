@@ -79,6 +79,10 @@ assert_contains "${hostdeps_diag_output}" "Node.js >= 22"
 assert_contains "${hostdeps_diag_output}" "cmake >= 3.19"
 assert_contains "${hostdeps_diag_output}" "build-essential"
 
+# 0j) launcher should track go source freshness before reusing cached TUI binary
+assert_contains "$(cat "${SCRIPT_PATH}")" 'is_tui_binary_up_to_date() {'
+assert_contains "$(cat "${SCRIPT_PATH}")" 'find "${root_dir}/cmd" "${root_dir}/internal" -type f -name '\''*.go'\'' -newer "${output_bin}"'
+
 # 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
