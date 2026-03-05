@@ -34,6 +34,11 @@ assert_not_contains() {
 
 # 0) entry script should load modular bootstrap in fixed order
 assert_contains "$(cat "${SCRIPT_PATH}")" 'source "${SCRIPT_DIR}/lib/openclawctl/bootstrap.sh"'
+assert_not_contains "$(cat "${SCRIPT_PATH}")" 'execute_install_plan() {'
+assert_not_contains "$(cat "${SCRIPT_PATH}")" 'execute_upgrade_plan() {'
+assert_not_contains "$(cat "${SCRIPT_PATH}")" 'execute_rebuild_plan() {'
+assert_not_contains "$(cat "${SCRIPT_PATH}")" 'run_selected_wizard() {'
+assert_not_contains "$(cat "${SCRIPT_PATH}")" 'main_loop() {'
 
 # 0b) common helpers should provide escaped command rendering
 common_print_cmd_output=$(DRY_RUN=1 SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; print_cmd "hello world" "*.txt"' 2>&1 || true)
