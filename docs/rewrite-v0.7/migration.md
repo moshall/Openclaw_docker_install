@@ -11,6 +11,12 @@
 - 入口按固定顺序 source 模块，避免隐式依赖。
 - 详细映射见：`docs/rewrite-v0.7/openclawctl-modular-map.md`
 
+## Task 9 验证记录（2026-03-05）
+- `bash tests/openclawctl_test.sh` ✅
+- `go test ./...` ✅
+- `bash tests/installer_v07_smoke_test.sh` ✅
+- `bash tests/installer_v07_1panel_test.sh` ✅
+
 ## Config Compatibility
 - v0.7 uses key-value `config.env` inputs (`CFG_*` fields).
 - Strict batch mode:

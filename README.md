@@ -55,6 +55,17 @@
 
 模块化映射文档：`docs/rewrite-v0.7/openclawctl-modular-map.md`
 
+## 2026-03-05 模块化全量回归（Task 9）
+
+已在本仓库执行并通过：
+
+```bash
+bash tests/openclawctl_test.sh
+go test ./...
+bash tests/installer_v07_smoke_test.sh
+bash tests/installer_v07_1panel_test.sh
+```
+
 ## 运行方式
 
 ```bash

@@ -1,6 +1,10 @@
 # v0.7 Release Checklist
 
 ## Local Verification
+- [x] Task 9 gate (2026-03-05): `bash tests/openclawctl_test.sh`
+- [x] Task 9 gate (2026-03-05): `go test ./...`
+- [x] Task 9 gate (2026-03-05): `bash tests/installer_v07_smoke_test.sh`
+- [x] Task 9 gate (2026-03-05): `bash tests/installer_v07_1panel_test.sh`
 - [x] `bash -n installer/v07/openclaw-install.sh`
 - [x] `bash tests/installer_v07_smoke_test.sh`
 - [x] `bash tests/installer_v07_detect_test.sh`

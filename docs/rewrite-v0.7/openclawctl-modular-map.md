@@ -36,6 +36,13 @@
 - 新增模块函数：优先放入对应 `lib/openclawctl/*.sh`，避免回写入口文件
 - 新增回归：优先补到 `tests/openclawctl_test.sh`，再扩展 `tests/e2e/*`
 
+## 入口脚本边界（Task 8 之后）
+
+- `openclawctl.sh` 仅保留：常量定义、模块 `source`、启动流程调用
+- `ops.sh` 负责执行器：`execute_install_plan` / `execute_upgrade_plan` / `execute_rebuild_plan`
+- `wizard.sh` 负责路由与主循环：`show_main_menu` / `main_loop` / `parse_global_flags` / `run_selected_wizard`
+- 回归通过 `tests/openclawctl_test.sh` 断言入口文件不再包含上述函数定义，防止回流到单文件
+
 ## 回归命令
 
 ```bash
