@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -200,9 +201,13 @@ func (m ProgramModel) statusText() string {
 }
 
 func (m ProgramModel) rightTitleWithFocus() string {
-	title := m.Editor.Layout.RightTitle
-	if title == "" {
-		title = "参数编辑"
+	title := "参数编辑"
+	if m.Editor != nil {
+		if form := m.Editor.CurrentForm(); form != nil {
+			if trimmed := strings.TrimSpace(form.Title); trimmed != "" {
+				title = trimmed
+			}
+		}
 	}
 	if m.Focus == FocusMenu {
 		return title + "（菜单焦点）"

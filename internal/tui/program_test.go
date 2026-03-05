@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,6 +50,18 @@ func TestProgramEnterOnTextFieldStartsEditing(t *testing.T) {
 	}
 }
 
+func TestProgramViewDoesNotAccumulateFocusSuffix(t *testing.T) {
+	t.Parallel()
+
+	model := NewProgramModel(buildTestEditor(), true)
+	model.Focus = FocusMenu
+	_ = model.View()
+	second := model.View()
+	if strings.Count(second, "（菜单焦点）") != 1 {
+		t.Fatalf("expected focus suffix to appear exactly once, got:\n%s", second)
+	}
+}
+
 func buildTestEditor() *EditorModel {
 	return NewEditorModel(
 		[]Action{{Key: "install", Label: "安装"}},
@@ -63,4 +76,3 @@ func buildTestEditor() *EditorModel {
 		},
 	)
 }
-
