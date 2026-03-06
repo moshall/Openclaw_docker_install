@@ -116,6 +116,12 @@ assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功�
 assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
 assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
 
+# 1b) on non-linux host, dry-run shell menu should allow 1panel menu preview
+panel_menu_preview_output=$(printf '3\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TEST_HOST_PLATFORM=darwin bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${panel_menu_preview_output}" "已启用 1Panel 菜单预演模式"
+assert_contains "${panel_menu_preview_output}" "1Panel VPS 专区（Linux）"
+assert_not_contains "${panel_menu_preview_output}" "1Panel 专区仅支持 Linux 主机"
+
 # 0b) shell should support direct wizard entrypoints for Go delegation
 wizard_install_output=$(printf 'q\n' | bash "${SCRIPT_PATH}" --dry-run --wizard install)
 assert_contains "${wizard_install_output}" "=== 🚀 安装新实例 ==="

@@ -135,9 +135,22 @@ docker_menu_loop() {
 }
 
 panel_menu_loop() {
-  if [[ "$(host_platform)" != "linux" ]]; then
-    log_error "1Panel 专区仅支持 Linux 主机"
-    return
+  local platform original_test_host_platform="" original_test_host_platform_set=0 preview_mode_enabled=0
+  platform="$(host_platform)"
+  if [[ -n "${OPENCLAWCTL_TEST_HOST_PLATFORM+x}" ]]; then
+    original_test_host_platform_set=1
+    original_test_host_platform="${OPENCLAWCTL_TEST_HOST_PLATFORM}"
+  fi
+
+  if [[ "${platform}" != "linux" ]]; then
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      preview_mode_enabled=1
+      export OPENCLAWCTL_TEST_HOST_PLATFORM="linux"
+      log_info "检测到当前主机为 ${platform}，已启用 1Panel 菜单预演模式（仅 dry-run）"
+    else
+      log_error "1Panel 专区仅支持 Linux 主机，请先 SSH 到 Linux VPS 后运行本脚本"
+      return
+    fi
   fi
 
   local choice
@@ -152,7 +165,16 @@ panel_menu_loop() {
       5) panel_deps_wizard ;;
       6) panel_info_wizard ;;
       7) panel_uninstall_wizard ;;
-      0) return ;;
+      0)
+        if [[ "${preview_mode_enabled}" -eq 1 ]]; then
+          if [[ "${original_test_host_platform_set}" -eq 1 ]]; then
+            export OPENCLAWCTL_TEST_HOST_PLATFORM="${original_test_host_platform}"
+          else
+            unset OPENCLAWCTL_TEST_HOST_PLATFORM
+          fi
+        fi
+        return
+        ;;
       *) log_error "无效选择" ;;
     esac
   done
