@@ -1750,13 +1750,15 @@ prompt_dep_set() {
   local uv_default="2"
   local go_default="2"
   local rust_default="2"
+  local python_default="2"
 
   dep_enabled "${normalized_base}" "npm" && npm_default="1"
   dep_enabled "${normalized_base}" "uv" && uv_default="1"
   dep_enabled "${normalized_base}" "go" && go_default="1"
   dep_enabled "${normalized_base}" "rust" && rust_default="1"
+  dep_enabled "${normalized_base}" "python3" && python_default="1"
 
-  echo "依赖选择（默认 npm+uv，go/rust 可选）:" >&2
+  echo "依赖选择（默认 npm+uv，go/rust/python3 可选）:" >&2
   echo "是否包含 npm:" >&2
   echo "  1) 是" >&2
   echo "  2) 否" >&2
@@ -1781,10 +1783,16 @@ prompt_dep_set() {
   local rust_choice
   rust_choice=$(read_choice_default "请选择" "${rust_default}")
 
+  echo "是否包含 python3:" >&2
+  echo "  1) 是" >&2
+  echo "  2) 否" >&2
+  local python_choice
+  python_choice=$(read_choice_default "请选择" "${python_default}")
+
   local extra_deps
   extra_deps=$(read_with_default "额外依赖命令（逗号分隔，可留空）" "")
 
-  build_dep_set_from_choices "${npm_choice}" "${uv_choice}" "${go_choice}" "${rust_choice}" "${extra_deps}"
+  build_dep_set_from_choices "${npm_choice}" "${uv_choice}" "${go_choice}" "${rust_choice}" "${python_choice}" "${extra_deps}"
 }
 
 value_or_unset() {

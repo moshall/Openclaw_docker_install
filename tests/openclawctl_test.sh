@@ -146,6 +146,35 @@ assert_contains "${panel_menu_preview_output}" "已启用 1Panel 菜单预演模
 assert_contains "${panel_menu_preview_output}" "1Panel VPS 专区（Linux）"
 assert_not_contains "${panel_menu_preview_output}" "1Panel 专区仅支持 Linux 主机"
 
+# 1c) native/panel/advanced submenus should expose full grouped options
+native_menu_output=$(printf '1\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${native_menu_output}" "新安装 OpenClaw（Native npm）"
+assert_contains "${native_menu_output}" "升级/重装 Native 实例"
+assert_contains "${native_menu_output}" "修复 Native 运行环境"
+assert_contains "${native_menu_output}" "查看 Native 部署信息"
+assert_contains "${native_menu_output}" "卸载 Native 实例"
+
+panel_menu_full_output=$(printf '3\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${panel_menu_full_output}" "安装 1Panel"
+assert_contains "${panel_menu_full_output}" "升级/修复 1Panel"
+assert_contains "${panel_menu_full_output}" "在 1Panel 环境安装 OpenClaw（Docker）"
+assert_contains "${panel_menu_full_output}" "接管已有 1Panel/OpenClaw 实例"
+assert_contains "${panel_menu_full_output}" "1Panel 环境依赖修复（Docker/网络/端口）"
+assert_contains "${panel_menu_full_output}" "查看 1Panel + OpenClaw 部署信息"
+assert_contains "${panel_menu_full_output}" "卸载 1Panel 环境下 OpenClaw 实例"
+
+advanced_wizard_selector_output=$(printf '9\n1\n0\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${advanced_wizard_selector_output}" "Advanced · Wizard 直达"
+assert_contains "${advanced_wizard_selector_output}" "1) install"
+assert_contains "${advanced_wizard_selector_output}" "9) native"
+assert_contains "${advanced_wizard_selector_output}" "15) panel-install"
+assert_contains "${advanced_wizard_selector_output}" "21) panel-uninstall"
+
+advanced_dry_run_menu_output=$(printf '9\n3\n0\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${advanced_dry_run_menu_output}" "Advanced · Dry-run 预演"
+assert_contains "${advanced_dry_run_menu_output}" "预演指定 Wizard（交互）"
+assert_contains "${advanced_dry_run_menu_output}" "预演指定 Wizard（配置文件）"
+
 # 0b) shell should support direct wizard entrypoints for Go delegation
 wizard_install_output=$(printf 'q\n' | bash "${SCRIPT_PATH}" --dry-run --wizard install)
 assert_contains "${wizard_install_output}" "=== 🚀 安装新实例 ==="
@@ -300,7 +329,7 @@ fi
 assert_contains "${wizard_invalid_output}" "无效的 wizard"
 
 # 1) install wizard: single-screen grouped editing + chinese stable + deps default(npm/uv)
-install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n1\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
+install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n1\n5\n1\n1\n1\n1\n2\n2\n2\n\n6\n1\nc\ny\n0\n'
 install_output=$(printf "%s" "${install_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${install_output}" "1) 🚀 新安装 Docker 实例（推荐）"
@@ -332,7 +361,7 @@ assert_contains "${install_output}" "TOKEN="
 assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 
 # 2) upgrade wizard: single-screen grouped editing + official beta + env persistence(on) + deps include go
-upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n1\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
+upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n1\n4\n1\n1\n1\n1\n1\n2\n2\n\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_output}" "2) 🔄 升级 Docker 实例"
@@ -409,10 +438,11 @@ assert_contains "${upgrade_abort_output}" "已取消"
 assert_not_contains "${upgrade_abort_output}" "docker pull"
 
 # 7) standalone dependency check/install menu (default npm/uv, go optional)
-deps_menu_input=$'2\n4\n1\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
-deps_menu_output=$(printf "%s" "${deps_menu_input}" | bash "${SCRIPT_PATH}" --dry-run)
+deps_menu_input=$'2\n4\n1\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n2\n\ny\n0\n'
+deps_menu_output=$(printf "%s" "${deps_menu_input}" | bash "${SCRIPT_PATH}" --dry-run 2>&1)
 
 assert_contains "${deps_menu_output}" "开始检测容器依赖: npm uv"
+assert_contains "${deps_menu_output}" "是否包含 python3:"
 assert_contains "${deps_menu_output}" "uv兼容模式: Debian/Ubuntu 遇到 PEP668 时自动回退安装"
 assert_contains "${deps_menu_output}" "[RUN] docker exec openclaw_demo sh -lc <runtime-deps-script>"
 
@@ -463,6 +493,13 @@ assert_contains "${rebuild_output}" "docker rm -f openclaw_rebuild"
 assert_contains "${rebuild_output}" "docker run -d --name openclaw_rebuild"
 assert_contains "${rebuild_output}" "-p 4231:4231"
 assert_contains "${rebuild_output}" "docker exec openclaw_rebuild sh -lc <runtime-path-repair-script>"
+
+# 12b) rebuild dependency editor should include python3 option and selection
+rebuild_python_dep_input=$'2\n3\n1\nopenclaw_rebuild_py\n4\n1\n1\n1\n2\n2\n1\n\nc\ny\n0\n'
+rebuild_python_dep_output=$(printf "%s" "${rebuild_python_dep_input}" | OPENCLAWCTL_TEST_CURRENT_IMAGE=docker.io/1panel/openclaw:2026.2.20 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${rebuild_python_dep_output}" "是否包含 python3:"
+assert_contains "${rebuild_python_dep_output}" "python3=已选"
+assert_contains "${rebuild_python_dep_output}" "开始检测容器依赖: npm uv python3"
 
 # 13) install should support official source custom tag selection via fetched tags
 install_official_tag_input=$'2\n1\n1\n1\n3\n3\n2\nopenclaw_official_tag\nc\ny\n0\n'
@@ -655,6 +692,65 @@ EOF
 panel_uninstall_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-uninstall --config-file "${panel_uninstall_cfg}")
 assert_contains "${panel_uninstall_output}" "docker rm -f openclaw_panel_del"
 assert_contains "${panel_uninstall_output}" "rm -rf /opt/1panel/apps/openclaw_panel_del"
+
+# 19e) panel repair/install/adopt/info and native-info wizard routes should be covered
+panel_fake_bin="${tmpdir}/panel-fake-bin"
+mkdir -p "${panel_fake_bin}"
+cat > "${panel_fake_bin}/1panel" <<'EOF'
+#!/usr/bin/env bash
+echo "fake-1panel:$*"
+EOF
+chmod +x "${panel_fake_bin}/1panel"
+
+panel_repair_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux PATH="${panel_fake_bin}:${PATH}" bash "${SCRIPT_PATH}" --dry-run --wizard panel-repair)
+assert_contains "${panel_repair_linux_output}" "=== 🔧 升级/修复 1Panel ==="
+assert_contains "${panel_repair_linux_output}" "1panel version"
+assert_contains "${panel_repair_linux_output}" "1panel update"
+
+panel_openclaw_install_cfg="${tmpdir}/panel-openclaw-install.cfg"
+cat > "${panel_openclaw_install_cfg}" <<'EOF'
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+NAME=openclaw_panel_install_cfg
+HOST_PORT=4126
+CONTAINER_PORT=18789
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+TOKEN_MODE=2
+TOKEN_MANUAL=paneltoken123
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+panel_openclaw_install_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-openclaw-install --config-file "${panel_openclaw_install_cfg}")
+assert_contains "${panel_openclaw_install_output}" "镜像: ghcr.io/1186258278/openclaw-zh:latest"
+assert_contains "${panel_openclaw_install_output}" "容器名: openclaw_panel_install_cfg"
+assert_contains "${panel_openclaw_install_output}" "持久化目录: /opt/1panel/apps/openclaw_panel_install_cfg"
+
+panel_openclaw_adopt_cfg="${tmpdir}/panel-openclaw-adopt.cfg"
+cat > "${panel_openclaw_adopt_cfg}" <<'EOF'
+NAME=openclaw_panel_adopt_cfg
+EOF
+panel_openclaw_adopt_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-openclaw-adopt --config-file "${panel_openclaw_adopt_cfg}")
+assert_contains "${panel_openclaw_adopt_output}" "接管结果"
+assert_contains "${panel_openclaw_adopt_output}" "容器名: openclaw_panel_adopt_cfg"
+assert_contains "${panel_openclaw_adopt_output}" "配置文件:"
+
+panel_info_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-info)
+assert_contains "${panel_info_output}" "deployment-info path:"
+assert_contains "${panel_info_output}" "deployment-info.txt"
+
+native_info_cfg="${tmpdir}/native-info.cfg"
+cat > "${native_info_cfg}" <<'EOF'
+NAME=openclaw_native_info_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_native_info_cfg
+EOF
+native_info_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native-info --config-file "${native_info_cfg}")
+assert_contains "${native_info_output}" "Native 应用：openclaw_native_info_cfg"
+assert_contains "${native_info_output}" "Native 报告路径：/opt/1panel/apps/openclaw_native_info_cfg/runtime/last_report.json"
 
 # 20) adopt mode should output inferred config summary in dry-run
 adopt_cfg="${tmpdir}/adopt.cfg"

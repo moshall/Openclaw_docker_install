@@ -315,7 +315,7 @@ advanced_wizard_key_from_choice() {
 advanced_choose_wizard_key() {
   local choice wizard_key
   while true; do
-    show_advanced_wizard_selector_menu
+    show_advanced_wizard_selector_menu >&2
     choice=$(read_choice_default "请选择向导" "0")
     wizard_key="$(advanced_wizard_key_from_choice "${choice}")"
     if [[ "${wizard_key}" == "__BACK__" ]]; then

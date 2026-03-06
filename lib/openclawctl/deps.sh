@@ -409,8 +409,14 @@ build_dep_set_from_choices() {
   local uv_choice="$2"
   local go_choice="$3"
   local rust_choice="$4"
-  local extra_deps="$5"
+  local python_choice="${5:-2}"
+  local extra_deps="${6:-}"
   local deps=""
+
+  if [[ "${python_choice}" != "1" && "${python_choice}" != "2" ]]; then
+    extra_deps="${python_choice}"
+    python_choice="2"
+  fi
 
   if [[ "${npm_choice}" == "1" ]]; then
     deps="${deps} npm"
@@ -423,6 +429,9 @@ build_dep_set_from_choices() {
   fi
   if [[ "${rust_choice}" == "1" ]]; then
     deps="${deps} rust"
+  fi
+  if [[ "${python_choice}" == "1" ]]; then
+    deps="${deps} python3"
   fi
   deps="${deps} ${extra_deps}"
   normalize_dep_list "${deps}"
