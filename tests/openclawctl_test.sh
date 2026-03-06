@@ -831,4 +831,26 @@ strict_adopt_output=$(OPENCLAWCTL_STRICT_NONINTERACTIVE=1 bash "${SCRIPT_PATH}" 
 assert_contains "${strict_adopt_output}" "STRICT_REPORT_PATH="
 assert_contains "${strict_adopt_output}" "/runtime/strict-report.json"
 
+# 31) rebuild dry-run should prefer recorded image over latest fallback
+rebuild_keep_name="openclaw_keep_version"
+rebuild_keep_data_root="${tmpdir}/apps"
+rebuild_keep_data_dir="${rebuild_keep_data_root}/${rebuild_keep_name}"
+mkdir -p "${rebuild_keep_data_dir}/runtime"
+cat > "${rebuild_keep_data_dir}/runtime/last_report.json" <<'EOF'
+{
+  "action": "install",
+  "status": "success",
+  "container_name": "openclaw_keep_version",
+  "image": "docker.io/1panel/openclaw:2026.2.20"
+}
+EOF
+rebuild_keep_output=$(printf '%s\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains "${rebuild_keep_output}" "镜像=docker.io/1panel/openclaw:2026.2.20"
+assert_not_contains "${rebuild_keep_output}" "镜像=docker.io/1panel/openclaw:latest"
+
+# 32) rebuild image edit should support official tag list selection
+rebuild_select_output=$(printf '%s\n1\n2\n1\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains "${rebuild_select_output}" "官方 openclaw 可选标签（最近）"
+assert_contains "${rebuild_select_output}" "已更新：镜像=docker.io/1panel/openclaw:latest"
+
 echo "[PASS] interactive openclawctl tests"

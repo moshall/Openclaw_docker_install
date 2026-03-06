@@ -1005,24 +1005,85 @@ detect_existing_data_dir() {
 detect_existing_image() {
   local name="$1"
   local fallback="$2"
+  local data_dir="${3:-}"
 
   if [[ -n "${OPENCLAWCTL_TEST_CURRENT_IMAGE:-}" ]]; then
     printf '%s\n' "${OPENCLAWCTL_TEST_CURRENT_IMAGE}"
     return
   fi
 
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    printf '%s\n' "${fallback}"
+  local detected=""
+  if command -v docker >/dev/null 2>&1; then
+    detected=$(docker inspect -f '{{.Config.Image}}' "${name}" 2>/dev/null || true)
+  fi
+  if [[ -n "${detected}" ]]; then
+    printf '%s\n' "${detected}"
     return
   fi
 
-  local detected
-  detected=$(docker inspect -f '{{.Config.Image}}' "${name}" 2>/dev/null || true)
-  if [[ -n "${detected}" ]]; then
-    printf '%s\n' "${detected}"
-  else
-    printf '%s\n' "${fallback}"
+  if [[ -n "${data_dir}" ]]; then
+    local report_image
+    report_image=$(detect_image_from_last_report "${data_dir}" || true)
+    if [[ -n "${report_image}" ]]; then
+      printf '%s\n' "${report_image}"
+      return
+    fi
   fi
+
+  local deployment_image
+  deployment_image=$(detect_image_from_deployment_info "${name}" "${data_dir}" || true)
+  if [[ -n "${deployment_image}" ]]; then
+    printf '%s\n' "${deployment_image}"
+    return
+  fi
+
+  printf '%s\n' "${fallback}"
+}
+
+detect_image_from_last_report() {
+  local data_dir="$1"
+  local report_file="${data_dir}/runtime/last_report.json"
+  if [[ ! -f "${report_file}" ]]; then
+    return 1
+  fi
+
+  local image
+  image=$(sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${report_file}" | head -n1)
+  image=$(trim_surrounding_spaces "${image}")
+  [[ -n "${image}" ]] || return 1
+  printf '%s\n' "${image}"
+}
+
+detect_image_from_deployment_info() {
+  local wanted_name="$1"
+  local wanted_data_dir="${2:-}"
+  local info_file
+  info_file=$(deployment_info_path)
+  if [[ ! -f "${info_file}" ]]; then
+    return 1
+  fi
+
+  local info_name info_data_dir info_image
+  info_name=$(sed -n 's/^[[:space:]]*容器名：[[:space:]]*//p' "${info_file}" | head -n1)
+  info_data_dir=$(sed -n 's/^[[:space:]]*数据目录：[[:space:]]*//p' "${info_file}" | head -n1)
+  info_image=$(sed -n 's/^[[:space:]]*镜像：[[:space:]]*//p' "${info_file}" | head -n1)
+
+  info_name=$(trim_surrounding_spaces "${info_name}")
+  info_data_dir=$(trim_surrounding_spaces "${info_data_dir}")
+  info_image=$(trim_surrounding_spaces "${info_image}")
+  [[ -n "${info_image}" ]] || return 1
+
+  if [[ -n "${wanted_name}" && -n "${info_name}" && "${wanted_name}" != "${info_name}" ]]; then
+    if [[ -z "${wanted_data_dir}" || -z "${info_data_dir}" || "${wanted_data_dir}" != "${info_data_dir}" ]]; then
+      return 1
+    fi
+  fi
+
+  if [[ -n "${wanted_data_dir}" && -n "${info_data_dir}" && "${wanted_data_dir}" != "${info_data_dir}" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${info_image}"
 }
 
 image_source_kind() {
@@ -3277,7 +3338,7 @@ persist_append_wizard() {
   local data_dir
   data_dir=$(detect_existing_data_dir "${name}" "$(default_data_dir_for_name "${name}")")
   local image
-  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")")
+  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")" "${data_dir}")
   local port_pair host_port container_port
   port_pair=$(detect_existing_ports "${name}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
   host_port="${port_pair%%,*}"
@@ -3822,12 +3883,13 @@ safe_rebuild_wizard() {
   local detected_host_port="${port_pair%%,*}"
   local detected_container_port="${port_pair##*,}"
 
-  local image
-  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")")
-
   local host_port="${detected_host_port}"
   local container_port="${detected_container_port}"
   local data_dir="${detected_data_dir}"
+
+  local image
+  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")" "${data_dir}")
+
   local extra_ports
   extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
 
@@ -3920,7 +3982,36 @@ safe_rebuild_wizard() {
     action=$(read_menu_choice "请选择分组")
     case "${action}" in
       1)
-        image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+        local next_image
+        next_image="${image}"
+        if is_official_openclaw_image_ref "${image}"; then
+          echo "镜像调整方式:"
+          echo "  1) 保持当前镜像（推荐）"
+          echo "  2) 官方版本列表选择"
+          echo "  3) 手动输入镜像"
+          local image_edit_mode
+          image_edit_mode=$(read_choice_default "请选择" "1")
+          case "${image_edit_mode}" in
+            2)
+              local parts repo current_tag selected_tag
+              parts=$(split_image_repo_and_tag "${image}")
+              repo="${parts%%|*}"
+              current_tag="${parts#*|}"
+              [[ -n "${current_tag}" ]] || current_tag="latest"
+              selected_tag=$(prompt_official_openclaw_tag "${current_tag}")
+              next_image="${repo}:${selected_tag}"
+              ;;
+            3)
+              next_image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+              ;;
+            *)
+              ;;
+          esac
+        else
+          next_image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+        fi
+        image=$(trim_surrounding_spaces "${next_image}")
+        [[ -n "${image}" ]] || image="${next_image}"
         log_info "已更新：镜像=${image}"
         ;;
       2)
