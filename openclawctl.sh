@@ -882,6 +882,87 @@ persistence_profile_path() {
   echo "${data_dir}/runtime/persistence.profile"
 }
 
+image_lock_profile_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/image-lock.profile"
+}
+
+resolve_locked_image_ref() {
+  local image="$1"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    printf '%s\n' "${image}"
+    return 0
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '%s\n' "${image}"
+    return 0
+  fi
+
+  local locked
+  locked=$(docker image inspect --format '{{index .RepoDigests 0}}' "${image}" 2>/dev/null || true)
+  locked=$(trim_surrounding_spaces "${locked}")
+  if [[ -z "${locked}" || "${locked}" == "<no value>" || "${locked}" == "<nil>" ]]; then
+    printf '%s\n' "${image}"
+    return 0
+  fi
+  printf '%s\n' "${locked}"
+}
+
+save_image_lock_profile() {
+  local data_dir="$1"
+  local requested_image="$2"
+  local effective_image="$3"
+  local locked_image="$4"
+  local profile
+  profile=$(image_lock_profile_path "${data_dir}")
+  run_cmd mkdir -p "${data_dir}/runtime"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "镜像锁定档案将保存到: ${profile}"
+    log_info "镜像锁定档案内容: requested=${requested_image}, effective=${effective_image}, locked=${locked_image}"
+    return 0
+  fi
+
+  cat > "${profile}" <<EOF
+REQUESTED_IMAGE=${requested_image}
+EFFECTIVE_IMAGE=${effective_image}
+LOCKED_IMAGE=${locked_image}
+UPDATED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+}
+
+load_image_lock_profile_value() {
+  local data_dir="$1"
+  local key="$2"
+  local profile
+  profile=$(image_lock_profile_path "${data_dir}")
+  if [[ ! -f "${profile}" ]]; then
+    return 1
+  fi
+  local value
+  value=$(awk -F '=' -v k="${key}" '$1==k {print substr($0, index($0, "=") + 1)}' "${profile}" | tail -n1)
+  value=$(trim_surrounding_spaces "${value}")
+  [[ -n "${value}" ]] || return 1
+  printf '%s\n' "${value}"
+}
+
+detect_locked_image_from_profile() {
+  local data_dir="$1"
+  local locked
+  locked=$(load_image_lock_profile_value "${data_dir}" "LOCKED_IMAGE" || true)
+  if [[ -n "${locked}" ]]; then
+    printf '%s\n' "${locked}"
+    return 0
+  fi
+  local effective
+  effective=$(load_image_lock_profile_value "${data_dir}" "EFFECTIVE_IMAGE" || true)
+  if [[ -n "${effective}" ]]; then
+    printf '%s\n' "${effective}"
+    return 0
+  fi
+  return 1
+}
+
 load_persistence_choice() {
   local data_dir="$1"
   local key="$2"
@@ -1010,6 +1091,15 @@ detect_existing_image() {
   if [[ -n "${OPENCLAWCTL_TEST_CURRENT_IMAGE:-}" ]]; then
     printf '%s\n' "${OPENCLAWCTL_TEST_CURRENT_IMAGE}"
     return
+  fi
+
+  if [[ -n "${data_dir}" ]]; then
+    local locked_image
+    locked_image=$(detect_locked_image_from_profile "${data_dir}" || true)
+    if [[ -n "${locked_image}" ]]; then
+      printf '%s\n' "${locked_image}"
+      return
+    fi
   fi
 
   local detected=""
@@ -3984,22 +4074,45 @@ safe_rebuild_wizard() {
       1)
         local next_image
         next_image="${image}"
+        local parts repo current_tag
+        parts=$(split_image_repo_and_tag "${image}")
+        repo="${parts%%|*}"
+        current_tag="${parts#*|}"
+        [[ -n "${current_tag}" ]] || current_tag="latest"
+
         if is_official_openclaw_image_ref "${image}"; then
           echo "镜像调整方式:"
-          echo "  1) 保持当前镜像（推荐）"
-          echo "  2) 官方版本列表选择"
+          echo "  1) 保持当前固定镜像（推荐）"
+          echo "  2) 按 latest 方式重建（可能升级）"
+          echo "  3) 官方版本列表选择"
+          echo "  4) 手动输入镜像"
+          local image_edit_mode
+          image_edit_mode=$(read_choice_default "请选择" "1")
+          case "${image_edit_mode}" in
+            2)
+              next_image="${repo}:latest"
+              ;;
+            3)
+              local selected_tag
+              selected_tag=$(prompt_official_openclaw_tag "${current_tag}")
+              next_image="${repo}:${selected_tag}"
+              ;;
+            4)
+              next_image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
+              ;;
+            *)
+              ;;
+          esac
+        else
+          echo "镜像调整方式:"
+          echo "  1) 保持当前固定镜像（推荐）"
+          echo "  2) 按 latest 方式重建（可能升级）"
           echo "  3) 手动输入镜像"
           local image_edit_mode
           image_edit_mode=$(read_choice_default "请选择" "1")
           case "${image_edit_mode}" in
             2)
-              local parts repo current_tag selected_tag
-              parts=$(split_image_repo_and_tag "${image}")
-              repo="${parts%%|*}"
-              current_tag="${parts#*|}"
-              [[ -n "${current_tag}" ]] || current_tag="latest"
-              selected_tag=$(prompt_official_openclaw_tag "${current_tag}")
-              next_image="${repo}:${selected_tag}"
+              next_image="${repo}:latest"
               ;;
             3)
               next_image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
@@ -4007,8 +4120,6 @@ safe_rebuild_wizard() {
             *)
               ;;
           esac
-        else
-          next_image=$(read_with_default "目标镜像（默认复用当前容器镜像）" "${image}")
         fi
         image=$(trim_surrounding_spaces "${next_image}")
         [[ -n "${image}" ]] || image="${next_image}"

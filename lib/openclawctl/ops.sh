@@ -18,6 +18,7 @@ execute_install_plan() {
   local extra_ports="${15:-}"
   local software_set="${16:-}"
   local skill_set="${17:-}"
+  local requested_image="${image}"
 
   software_set=$(normalize_software_set "${software_set}")
   skill_set=$(normalize_skill_set "${skill_set}")
@@ -45,6 +46,8 @@ execute_install_plan() {
   if ! docker_pull_image_checked "${image}"; then
     return 1
   fi
+  local locked_image
+  locked_image=$(resolve_locked_image_ref "${image}")
   remove_container_if_exists "${name}"
   bootstrap_openclaw_config "${image}" "${data_dir}" "${container_port}" "${gateway_bind}" "${token}"
   local -a install_nonfatal_issues=()
@@ -117,6 +120,7 @@ execute_install_plan() {
     done
     log_info "可稍后通过菜单 5) 🔧 检查或补齐运行环境 重新执行补齐"
   fi
+  save_image_lock_profile "${data_dir}" "${requested_image}" "${image}" "${locked_image}"
   write_last_report "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "http://<server-ip>:${host_port}/?token=${token}" "${install_nonfatal_issues[@]}"
   print_human_summary "install" "${name}" "${install_version}" "${install_status_text}" "${data_dir}" "${install_runtime_paths}" "${install_deps_installed}" "${gateway_bind}" "${token}" "${host_port}" "${extra_ports}"
   write_deployment_info "install" "${install_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "${token}" "${extra_ports}" || true
@@ -137,6 +141,7 @@ execute_upgrade_plan() {
   local upgrade_dep_set="${12}"
   local extra_ports="${13:-}"
   local software_set
+  local requested_image="${image}"
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
@@ -171,10 +176,12 @@ execute_upgrade_plan() {
   if ! docker_pull_image_checked "${image}"; then
     return 1
   fi
+  local locked_image
+  locked_image=$(resolve_locked_image_ref "${image}")
 
   local -a upgrade_nonfatal_issues=()
   local current_image
-  current_image=$(detect_existing_image "${name}" "")
+  current_image=$(detect_existing_image "${name}" "" "${data_dir}")
   if ! run_optional_step "版本源切换兼容修正" prepare_source_switch_transition "${data_dir}" "${current_image}" "${image}"; then
     upgrade_nonfatal_issues+=("版本源切换兼容修正失败")
   fi
@@ -257,6 +264,7 @@ execute_upgrade_plan() {
   fi
   local upgrade_status="success"
   [[ "${#upgrade_nonfatal_issues[@]}" -gt 0 ]] && upgrade_status="success_with_warnings"
+  save_image_lock_profile "${data_dir}" "${requested_image}" "${image}" "${locked_image}"
   write_last_report "upgrade" "${upgrade_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${upgrade_nonfatal_issues[@]}"
 
   local upgrade_version upgrade_status_text upgrade_runtime_paths upgrade_deps_installed upgrade_gateway_bind upgrade_token
@@ -284,6 +292,7 @@ execute_rebuild_plan() {
   local rebuild_dep_set="${11}"
   local extra_ports="${12:-}"
   local software_set
+  local requested_image="${image}"
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
@@ -316,10 +325,12 @@ execute_rebuild_plan() {
   if ! docker_pull_image_checked "${image}"; then
     return 1
   fi
+  local locked_image
+  locked_image=$(resolve_locked_image_ref "${image}")
 
   local -a rebuild_nonfatal_issues=()
   local current_image
-  current_image=$(detect_existing_image "${name}" "")
+  current_image=$(detect_existing_image "${name}" "" "${data_dir}")
   if ! run_optional_step "版本源切换兼容修正" prepare_source_switch_transition "${data_dir}" "${current_image}" "${image}"; then
     rebuild_nonfatal_issues+=("版本源切换兼容修正失败")
   fi
@@ -397,6 +408,7 @@ execute_rebuild_plan() {
 
   local rebuild_status="success"
   [[ "${#rebuild_nonfatal_issues[@]}" -gt 0 ]] && rebuild_status="success_with_warnings"
+  save_image_lock_profile "${data_dir}" "${requested_image}" "${image}" "${locked_image}"
   write_last_report "rebuild" "${rebuild_status}" "${name}" "${data_dir}" "${image}" "${host_port}" "${container_port}" "" "" "${rebuild_nonfatal_issues[@]}"
 
   local rebuild_version rebuild_status_text rebuild_runtime_paths rebuild_deps_installed rebuild_gateway_bind rebuild_token

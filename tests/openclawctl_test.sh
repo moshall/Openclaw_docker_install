@@ -848,9 +848,24 @@ rebuild_keep_output=$(printf '%s\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA
 assert_contains "${rebuild_keep_output}" "镜像=docker.io/1panel/openclaw:2026.2.20"
 assert_not_contains "${rebuild_keep_output}" "镜像=docker.io/1panel/openclaw:latest"
 
+# 31b) rebuild should prefer locked image profile when present
+cat > "${rebuild_keep_data_dir}/runtime/image-lock.profile" <<'EOF'
+REQUESTED_IMAGE=docker.io/1panel/openclaw:latest
+EFFECTIVE_IMAGE=docker.io/1panel/openclaw:latest
+LOCKED_IMAGE=docker.io/1panel/openclaw@sha256:deadbeef
+UPDATED_AT=2026-03-06T00:00:00Z
+EOF
+rebuild_keep_locked_output=$(printf '%s\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains "${rebuild_keep_locked_output}" "镜像=docker.io/1panel/openclaw@sha256:deadbeef"
+
 # 32) rebuild image edit should support official tag list selection
-rebuild_select_output=$(printf '%s\n1\n2\n1\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+rebuild_select_output=$(printf '%s\n1\n3\n1\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
 assert_contains "${rebuild_select_output}" "官方 openclaw 可选标签（最近）"
 assert_contains "${rebuild_select_output}" "已更新：镜像=docker.io/1panel/openclaw:latest"
+
+# 33) rebuild image edit should support explicit latest mode
+rebuild_latest_output=$(printf '%s\n1\n2\nq\n' "${rebuild_keep_name}" | OPENCLAWCTL_DATA_ROOT="${rebuild_keep_data_root}" OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains "${rebuild_latest_output}" "按 latest 方式重建（可能升级）"
+assert_contains "${rebuild_latest_output}" "已更新：镜像=docker.io/1panel/openclaw:latest"
 
 echo "[PASS] interactive openclawctl tests"
