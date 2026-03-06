@@ -68,6 +68,13 @@ host_platform() {
   esac
 }
 
+has_docker_command() {
+  if [[ "${OPENCLAWCTL_TEST_FORCE_DOCKER_MISSING:-0}" == "1" ]]; then
+    return 1
+  fi
+  command -v docker >/dev/null 2>&1
+}
+
 find_recommended_host_port() {
   local start="${1:-7100}"
   local end="${2:-7200}"
@@ -458,6 +465,7 @@ maybe_exec_tui() {
 
   local tui_bin
   if ! tui_bin=$(resolve_tui_binary); then
+    log_info "未检测到可用增强 TUI 二进制（可能缺少 Go），已回退到 Shell 菜单。"
     return 1
   fi
 
@@ -893,7 +901,7 @@ resolve_locked_image_ref() {
     printf '%s\n' "${image}"
     return 0
   fi
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! has_docker_command; then
     printf '%s\n' "${image}"
     return 0
   fi
@@ -910,7 +918,7 @@ resolve_locked_image_ref() {
 
 detect_local_locked_image_ref() {
   local image="$1"
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! has_docker_command; then
     return 1
   fi
   local locked
@@ -1115,7 +1123,7 @@ detect_existing_image() {
   fi
 
   local detected=""
-  if command -v docker >/dev/null 2>&1; then
+  if has_docker_command; then
     detected=$(docker inspect -f '{{.Config.Image}}' "${name}" 2>/dev/null || true)
   fi
   if [[ -n "${detected}" ]]; then
@@ -1609,9 +1617,11 @@ install_docker_if_missing() {
 
   if [[ "${platform}" == "linux" ]]; then
     hostdeps_warn_if_eol_linux || true
-    local install_choice="${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-}"
-    if [[ -z "${install_choice}" && is_interactive_session ]]; then
-      printf '检测到未安装 Docker，是否自动安装 Docker Engine? (y/N): '
+    local install_choice="${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-1}"
+    if [[ -z "${OPENCLAWCTL_AUTO_INSTALL_DOCKER:-}" ]]; then
+      log_info "检测到未安装 Docker，将自动安装 Docker Engine（可设置 OPENCLAWCTL_AUTO_INSTALL_DOCKER=0 关闭）"
+    elif [[ "${install_choice}" == "0" && is_interactive_session ]]; then
+      printf '检测到未安装 Docker，是否改为自动安装 Docker Engine? (y/N): '
       IFS= read -r install_choice
     fi
     if [[ "${install_choice}" != "1" ]] && ! validate_yes_no "${install_choice:-n}"; then
@@ -1674,7 +1684,7 @@ run_preflight_checks() {
     log_info "[preflight] host_os=${ID:-unknown} ${VERSION_ID:-unknown}"
   fi
 
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! has_docker_command; then
     log_info "[preflight] docker 命令不可用，尝试自动安装/引导"
     if ! install_docker_if_missing; then
       log_error "[preflight] docker 命令不可用"
@@ -1682,7 +1692,7 @@ run_preflight_checks() {
     fi
   fi
 
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! has_docker_command; then
     log_error "[preflight] docker 安装后仍不可用"
     return 1
   fi
@@ -3135,7 +3145,7 @@ repair_1panel_environment_dependencies() {
   local failed=0
   local auto_fix="${OPENCLAWCTL_AUTO_FIX_HOST_DEPS:-1}"
 
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! has_docker_command; then
     log_error "[panel] 缺少 docker 命令"
     if [[ "${auto_fix}" == "1" ]]; then
       hostdeps_install_docker_via_package_manager || failed=1
@@ -3145,7 +3155,7 @@ repair_1panel_environment_dependencies() {
   fi
 
   run_cmd docker info
-  if [[ "${DRY_RUN}" -eq 0 ]] && command -v docker >/dev/null 2>&1; then
+  if [[ "${DRY_RUN}" -eq 0 ]] && has_docker_command; then
     if ! docker info >/dev/null 2>&1; then
       log_error "[panel] Docker Daemon 未就绪，尝试拉起服务"
       if command -v systemctl >/dev/null 2>&1; then

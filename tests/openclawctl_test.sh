@@ -88,6 +88,21 @@ assert_contains "${hostdeps_diag_output}" "Node.js >= 22"
 assert_contains "${hostdeps_diag_output}" "cmake >= 3.19"
 assert_contains "${hostdeps_diag_output}" "build-essential"
 
+# 0i2) hostdeps should auto align ubuntu apt suite codename when mismatch is detected
+aptfix_tmpdir=$(mktemp -d)
+aptfix_sources="${aptfix_tmpdir}/sources.list"
+cat > "${aptfix_sources}" <<'EOF'
+deb http://old-releases.ubuntu.com/ubuntu/ hirsute main restricted
+deb http://old-releases.ubuntu.com/ubuntu/ hirsute-updates main restricted
+deb https://deb.nodesource.com/node_22.x nodistro main
+EOF
+hostdeps_aptfix_output=$(SCRIPT_DIR="${SCRIPT_HOME}" OPENCLAWCTL_TEST_HOST_OS=linux OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu OPENCLAWCTL_TEST_HOST_OS_VERSION=21.10 OPENCLAWCTL_TEST_HOST_OS_CODENAME=impish OPENCLAWCTL_TEST_HOST_PM=apt OPENCLAWCTL_TEST_APT_SOURCE_FILES="${aptfix_sources}" OPENCLAWCTL_AUTO_FIX_APT_SOURCES=1 bash -c 'set -euo pipefail; DRY_RUN=0; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/hostdeps.sh"; hostdeps_align_ubuntu_apt_sources_codename; cat "${OPENCLAWCTL_TEST_APT_SOURCE_FILES}"' 2>&1 || true)
+assert_contains "${hostdeps_aptfix_output}" "impish main restricted"
+assert_contains "${hostdeps_aptfix_output}" "impish-updates main restricted"
+assert_contains "${hostdeps_aptfix_output}" "nodistro main"
+assert_not_contains "${hostdeps_aptfix_output}" "hirsute main restricted"
+rm -rf "${aptfix_tmpdir}"
+
 # 0j) launcher should track go source freshness before reusing cached TUI binary
 assert_contains "$(cat "${SCRIPT_PATH}")" 'is_tui_binary_up_to_date() {'
 assert_contains "$(cat "${SCRIPT_PATH}")" 'find "${root_dir}/cmd" "${root_dir}/internal" -type f -name '\''*.go'\'' -newer "${output_bin}"'
@@ -318,6 +333,11 @@ wizard_deps_cfg_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard deps --config-
 assert_contains "${wizard_deps_cfg_output}" "开始检测容器依赖: npm uv go"
 assert_contains "${wizard_deps_cfg_output}" "依赖检测模式: 仅检测，不安装"
 assert_not_contains "${wizard_deps_cfg_output}" "=== 🔧 检查或补齐运行环境 ==="
+
+# 0b2) missing docker on linux should default to auto-install guidance
+docker_autoinstall_default_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux OPENCLAWCTL_TEST_FORCE_DOCKER_MISSING=1 bash "${SCRIPT_PATH}" --dry-run --wizard deps --config-file "${wizard_deps_cfg}" 2>&1 || true)
+assert_contains "${docker_autoinstall_default_output}" "检测到未安装 Docker，将自动安装 Docker Engine"
+assert_contains "${docker_autoinstall_default_output}" "get.docker.com"
 
 set +e
 wizard_invalid_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard invalid 2>&1)

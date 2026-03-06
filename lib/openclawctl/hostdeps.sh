@@ -29,6 +29,12 @@ hostdeps_linux_os_release_field() {
         return
       fi
       ;;
+    VERSION_CODENAME)
+      if [[ -n "${OPENCLAWCTL_TEST_HOST_OS_CODENAME:-}" ]]; then
+        printf '%s\n' "${OPENCLAWCTL_TEST_HOST_OS_CODENAME}"
+        return
+      fi
+      ;;
   esac
 
   if [[ -f /etc/os-release ]]; then
@@ -37,6 +43,7 @@ hostdeps_linux_os_release_field() {
     case "${field}" in
       ID) printf '%s\n' "${ID:-unknown}" ;;
       VERSION_ID) printf '%s\n' "${VERSION_ID:-unknown}" ;;
+      VERSION_CODENAME) printf '%s\n' "${VERSION_CODENAME:-}" ;;
       *) printf '%s\n' "unknown" ;;
     esac
     return
@@ -95,6 +102,205 @@ hostdeps_detect_package_manager() {
     return
   fi
   echo ""
+}
+
+hostdeps_known_ubuntu_codenames_regex() {
+  printf '%s\n' "warty|hoary|breezy|dapper|edgy|feisty|gutsy|hardy|intrepid|jaunty|karmic|lucid|maverick|natty|oneiric|precise|quantal|raring|saucy|trusty|utopic|vivid|wily|xenial|yakkety|zesty|artful|bionic|cosmic|disco|eoan|focal|groovy|hirsute|impish|jammy|kinetic|lunar|mantic|noble|oracular|plucky|questing"
+}
+
+hostdeps_is_known_ubuntu_codename() {
+  local codename="${1:-}"
+  local re
+  re=$(hostdeps_known_ubuntu_codenames_regex)
+  [[ "${codename}" =~ ^(${re})$ ]]
+}
+
+hostdeps_guess_ubuntu_codename_from_version() {
+  local version="${1:-}"
+  case "${version}" in
+    20.04) echo "focal" ;;
+    20.10) echo "groovy" ;;
+    21.04) echo "hirsute" ;;
+    21.10) echo "impish" ;;
+    22.04) echo "jammy" ;;
+    22.10) echo "kinetic" ;;
+    23.04) echo "lunar" ;;
+    23.10) echo "mantic" ;;
+    24.04) echo "noble" ;;
+    24.10) echo "oracular" ;;
+    25.04) echo "plucky" ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+hostdeps_adjust_ubuntu_suite_token() {
+  local suite="${1:-}"
+  local codename="${2:-}"
+  local base suffix adjusted
+  base="${suite%%-*}"
+  suffix="${suite#${base}}"
+  adjusted="${suite}"
+  if hostdeps_is_known_ubuntu_codename "${base}" && [[ "${base}" != "${codename}" ]]; then
+    adjusted="${codename}${suffix}"
+  fi
+  printf '%s\n' "${adjusted}"
+}
+
+hostdeps_list_apt_source_files() {
+  if [[ -n "${OPENCLAWCTL_TEST_APT_SOURCE_FILES:-}" ]]; then
+    local test_files
+    test_files="${OPENCLAWCTL_TEST_APT_SOURCE_FILES//$'\n'/ }"
+    test_files="${test_files//:/ }"
+    local file
+    for file in ${test_files}; do
+      [[ -f "${file}" ]] && printf '%s\n' "${file}"
+    done
+    return
+  fi
+
+  [[ -f /etc/apt/sources.list ]] && printf '%s\n' "/etc/apt/sources.list"
+  local file
+  for file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f "${file}" ]] && printf '%s\n' "${file}"
+  done
+}
+
+hostdeps_align_ubuntu_apt_file_codename() {
+  local file="$1"
+  local codename="$2"
+  local tmp_file
+  tmp_file=$(mktemp)
+
+  local changed=0
+  local is_sources_file=0
+  if [[ "${file}" == *.sources ]] && grep -Eqi '^[[:space:]]*URIs:[[:space:]].*(old-releases\.ubuntu\.com/ubuntu|[[:alnum:].-]*ubuntu\.com/ubuntu)' "${file}"; then
+    is_sources_file=1
+  fi
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    local new_line="${line}"
+    if [[ "${line}" =~ ^([[:space:]]*deb(-src)?[[:space:]]+)(\[[^]]+\][[:space:]]+)?([^[:space:]]+)[[:space:]]+([^[:space:]]+)(.*)$ ]]; then
+      local prefix="${BASH_REMATCH[1]}"
+      local options="${BASH_REMATCH[3]}"
+      local uri="${BASH_REMATCH[4]}"
+      local suite="${BASH_REMATCH[5]}"
+      local rest="${BASH_REMATCH[6]}"
+      if [[ "${uri}" == *ubuntu.com/ubuntu* || "${uri}" == *old-releases.ubuntu.com/ubuntu* ]]; then
+        local adjusted_suite
+        adjusted_suite=$(hostdeps_adjust_ubuntu_suite_token "${suite}" "${codename}")
+        if [[ "${adjusted_suite}" != "${suite}" ]]; then
+          changed=1
+          new_line="${prefix}${options}${uri} ${adjusted_suite}${rest}"
+        fi
+      fi
+    elif [[ "${is_sources_file}" -eq 1 && "${line}" =~ ^([[:space:]]*Suites:[[:space:]]+)(.*)$ ]]; then
+      local suites_raw="${BASH_REMATCH[2]}"
+      local adjusted_suites=""
+      local suite_token
+      for suite_token in ${suites_raw}; do
+        local adjusted_token
+        adjusted_token=$(hostdeps_adjust_ubuntu_suite_token "${suite_token}" "${codename}")
+        if [[ -z "${adjusted_suites}" ]]; then
+          adjusted_suites="${adjusted_token}"
+        else
+          adjusted_suites="${adjusted_suites} ${adjusted_token}"
+        fi
+        if [[ "${adjusted_token}" != "${suite_token}" ]]; then
+          changed=1
+        fi
+      done
+      new_line="${BASH_REMATCH[1]}${adjusted_suites}"
+    fi
+    printf '%s\n' "${new_line}" >> "${tmp_file}"
+  done < "${file}"
+
+  if [[ "${changed}" -eq 0 ]]; then
+    rm -f "${tmp_file}"
+    return 0
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "[hostdeps] dry-run: 将修复 apt 源发行代号: ${file} -> ${codename}"
+    rm -f "${tmp_file}"
+    return 0
+  fi
+
+  local backup_file="${file}.bak-openclawctl-$(date +%Y%m%d%H%M%S)"
+  cp "${file}" "${backup_file}"
+  cat "${tmp_file}" > "${file}"
+  rm -f "${tmp_file}"
+  log_info "[hostdeps] 已自动修复 apt 源发行代号: ${file}（备份: ${backup_file}）"
+  return 0
+}
+
+hostdeps_align_ubuntu_apt_sources_codename() {
+  if [[ "$(hostdeps_current_os)" != "linux" ]]; then
+    return 0
+  fi
+  if [[ "$(hostdeps_detect_package_manager)" != "apt" ]]; then
+    return 0
+  fi
+  if [[ "$(hostdeps_linux_os_release_field ID)" != "ubuntu" ]]; then
+    return 0
+  fi
+
+  local codename
+  codename=$(hostdeps_linux_os_release_field "VERSION_CODENAME")
+  if [[ -z "${codename}" ]]; then
+    codename=$(hostdeps_guess_ubuntu_codename_from_version "$(hostdeps_linux_os_release_field VERSION_ID)")
+  fi
+  if ! hostdeps_is_known_ubuntu_codename "${codename}"; then
+    return 0
+  fi
+
+  local file
+  while IFS= read -r file; do
+    [[ -n "${file}" ]] || continue
+    hostdeps_align_ubuntu_apt_file_codename "${file}" "${codename}" || true
+  done < <(hostdeps_list_apt_source_files)
+}
+
+hostdeps_prepare_apt() {
+  if [[ "$(hostdeps_detect_package_manager)" != "apt" ]]; then
+    return 0
+  fi
+
+  if [[ "${OPENCLAWCTL_AUTO_FIX_APT_SOURCES:-1}" == "1" ]]; then
+    hostdeps_align_ubuntu_apt_sources_codename || true
+  fi
+
+  set +e
+  run_cmd apt-get update
+  local update_rc=$?
+  set -e
+  if [[ "${update_rc}" -eq 0 ]]; then
+    return 0
+  fi
+
+  log_error "[hostdeps] apt-get update 失败，尝试修复后重试"
+  run_cmd sh -lc 'DEBIAN_FRONTEND=noninteractive apt-get -f install -y || true'
+  run_cmd apt-get update
+}
+
+hostdeps_apt_install_with_retry() {
+  local package_spec="$*"
+  [[ -n "${package_spec}" ]] || return 0
+  hostdeps_prepare_apt || return 1
+
+  set +e
+  run_cmd sh -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ${package_spec}"
+  local install_rc=$?
+  set -e
+  if [[ "${install_rc}" -eq 0 ]]; then
+    return 0
+  fi
+
+  log_error "[hostdeps] apt 安装失败，尝试修复并重试: ${package_spec}"
+  run_cmd sh -lc 'DEBIAN_FRONTEND=noninteractive apt-get -f install -y || true'
+  hostdeps_prepare_apt || true
+  run_cmd sh -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ${package_spec}"
 }
 
 hostdeps_detect_node_major() {
@@ -201,8 +407,7 @@ hostdeps_install_docker_via_package_manager() {
 
   case "${pm}" in
     apt)
-      run_cmd apt-get update
-      run_cmd apt-get install -y docker.io
+      hostdeps_apt_install_with_retry docker.io
       ;;
     dnf)
       run_cmd dnf install -y docker
@@ -234,10 +439,9 @@ hostdeps_install_node_runtime() {
   local pm="$1"
   case "${pm}" in
     apt)
-      run_cmd apt-get update
-      run_cmd apt-get install -y curl ca-certificates gnupg
+      hostdeps_apt_install_with_retry curl ca-certificates gnupg
       run_cmd sh -lc 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
-      run_cmd apt-get install -y nodejs
+      hostdeps_apt_install_with_retry nodejs
       ;;
     dnf)
       run_cmd dnf install -y curl ca-certificates
@@ -267,8 +471,7 @@ hostdeps_install_build_toolchain() {
   local pm="$1"
   case "${pm}" in
     apt)
-      run_cmd apt-get update
-      run_cmd apt-get install -y build-essential cmake git pkg-config python3 python3-pip
+      hostdeps_apt_install_with_retry build-essential cmake git pkg-config python3 python3-pip python3-venv
       ;;
     dnf)
       run_cmd dnf install -y gcc gcc-c++ make cmake git pkgconf-pkg-config python3 python3-pip
@@ -311,8 +514,26 @@ hostdeps_upgrade_cmake_if_needed() {
   if ! hostdeps_has_command pip3; then
     run_cmd sh -lc 'python3 -m ensurepip --upgrade || true'
   fi
-  run_cmd python3 -m pip install --upgrade pip
-  run_cmd python3 -m pip install --upgrade cmake ninja
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    local pm
+    pm=$(hostdeps_detect_package_manager)
+    case "${pm}" in
+      apt)
+        hostdeps_apt_install_with_retry python3-pip python3-venv || true
+        ;;
+      apk)
+        run_cmd apk add --no-cache py3-pip py3-virtualenv || true
+        ;;
+      dnf)
+        run_cmd dnf install -y python3-pip python3-virtualenv || true
+        ;;
+      yum)
+        run_cmd yum install -y python3-pip python3-virtualenv || true
+        ;;
+    esac
+  fi
+  run_cmd sh -lc 'python3 -m pip install --upgrade pip || python3 -m pip install --upgrade pip --break-system-packages || true'
+  run_cmd sh -lc 'python3 -m pip install --upgrade cmake ninja || python3 -m pip install --upgrade cmake ninja --break-system-packages || true'
 
   current_version=$(hostdeps_detect_cmake_version)
   if ! hostdeps_version_gte "${current_version}" "${minimum_version}"; then
