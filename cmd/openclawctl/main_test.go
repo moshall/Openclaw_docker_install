@@ -378,3 +378,12 @@ func TestResolveInteractionModeRespectsDisableFlag(t *testing.T) {
 		t.Fatalf("expected legacy mode when disabled, got %v", mode)
 	}
 }
+
+func TestResolveInteractionModeDefaultsToLegacyWithoutFlag(t *testing.T) {
+	t.Parallel()
+
+	mode := resolveInteractionMode(true, true, "xterm-256color", "")
+	if mode != interactionModeLegacyForm {
+		t.Fatalf("expected legacy mode by default when enhanced flag is unset, got %v", mode)
+	}
+}

@@ -83,7 +83,7 @@ assert_contains "${hostdeps_diag_output}" "build-essential"
 assert_contains "$(cat "${SCRIPT_PATH}")" 'is_tui_binary_up_to_date() {'
 assert_contains "$(cat "${SCRIPT_PATH}")" 'find "${root_dir}/cmd" "${root_dir}/internal" -type f -name '\''*.go'\'' -newer "${output_bin}"'
 
-# 1) launcher should prefer TUI binary in interactive mode but fall back in non-TTY mode
+# 1) launcher should default to shell menu; enhanced TUI must be explicitly enabled
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
 fake_tui="${tmpdir}/fake-openclawctl-tui"
@@ -93,18 +93,19 @@ echo "FAKE_TUI:$*"
 EOF
 chmod +x "${fake_tui}"
 
-launcher_tui_output=$(OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run 2>&1 || true)
-assert_contains "${launcher_tui_output}" "FAKE_TUI:"
-assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功能"
-assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
-assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
-
-launcher_shell_output=$(printf '0\n' | OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run)
+launcher_shell_output=$(printf '0\n' | OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run)
 assert_contains "${launcher_shell_output}" "OpenClaw 部署助手"
 assert_contains "${launcher_shell_output}" "Native 实体机安装与管理"
 assert_contains "${launcher_shell_output}" "Docker 隔离环境安装与管理"
 assert_contains "${launcher_shell_output}" "远程 VPS 1Panel 版 Docker"
 assert_not_contains "${launcher_shell_output}" "FAKE_TUI:"
+assert_not_contains "${launcher_shell_output}" "正在构建TUI菜单中，即将呈现"
+
+launcher_tui_output=$(OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_ENHANCED_TUI=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run 2>&1 || true)
+assert_contains "${launcher_tui_output}" "FAKE_TUI:"
+assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功能"
+assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
+assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
 
 # 0b) shell should support direct wizard entrypoints for Go delegation
 wizard_install_output=$(printf 'q\n' | bash "${SCRIPT_PATH}" --dry-run --wizard install)

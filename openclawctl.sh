@@ -346,6 +346,10 @@ is_interactive_session() {
   stdin_is_tty && stdout_is_tty
 }
 
+enhanced_tui_enabled() {
+  [[ "${OPENCLAWCTL_ENHANCED_TUI:-0}" == "1" ]]
+}
+
 enforce_strict_noninteractive_mode() {
   if ! strict_noninteractive_mode_enabled; then
     return 0
@@ -364,6 +368,9 @@ announce_startup_progress() {
 
   log_info "系统环境检测中用于匹配功能..."
   if [[ "${OPENCLAWCTL_FORCE_SHELL:-0}" == "1" ]]; then
+    return 0
+  fi
+  if ! enhanced_tui_enabled; then
     return 0
   fi
   log_info "正在构建TUI菜单中，即将呈现..."
@@ -440,6 +447,9 @@ build_tui_binary_if_possible() {
 
 maybe_exec_tui() {
   if [[ "${OPENCLAWCTL_FORCE_SHELL:-0}" == "1" || "${OPENCLAWCTL_TUI_ACTIVE:-0}" == "1" ]]; then
+    return 1
+  fi
+  if ! enhanced_tui_enabled; then
     return 1
   fi
   if ! is_interactive_session; then

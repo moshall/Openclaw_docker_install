@@ -341,7 +341,7 @@ func resolveInteractionMode(stdinTTY, stdoutTTY bool, termName, enhancedFlag str
 	if app.ShouldFallbackToShell(stdinTTY, stdoutTTY) {
 		return interactionModeShell
 	}
-	if strings.TrimSpace(enhancedFlag) == "0" {
+	if strings.TrimSpace(enhancedFlag) != "1" {
 		return interactionModeLegacyForm
 	}
 	if !terminalSupportsEnhancedTUI(termName) {
