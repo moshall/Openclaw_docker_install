@@ -278,6 +278,8 @@ repair_runtime_command_paths() {
   local container_name="$1"
   local script='
 set -e
+path_profile="/root/.openclaw/runtime/path-decls/openclaw-runtime-path.sh"
+shim_dir="/root/.openclaw/runtime/path-shims"
 ensure_path_now() {
   for d in "$@"; do
     [ -d "$d" ] || continue
@@ -287,34 +289,56 @@ ensure_path_now() {
     esac
   done
 }
+ensure_path_profile_loader() {
+  local loader="/etc/profile.d/openclaw-runtime-path.sh"
+  mkdir -p /etc/profile.d || true
+  printf "%s\n" "[ -f ${path_profile} ] && . ${path_profile}" > "$loader" || true
+}
 persist_path_dir() {
   local d="$1"
   [ -d "$d" ] || return 0
-  local profile="/etc/profile.d/openclaw-runtime-path.sh"
-  mkdir -p /etc/profile.d || true
-  touch "$profile" || return 0
-  grep -F "export PATH=\"$d:\$PATH\"" "$profile" >/dev/null 2>&1 || \
-    echo "export PATH=\"$d:\$PATH\"" >> "$profile"
+  mkdir -p "$(dirname "$path_profile")" || true
+  touch "$path_profile" || return 0
+  grep -F "export PATH=\"$d:\$PATH\"" "$path_profile" >/dev/null 2>&1 || \
+    echo "export PATH=\"$d:\$PATH\"" >> "$path_profile"
+}
+ensure_shim_dir() {
+  mkdir -p "$shim_dir" || true
+}
+link_shim() {
+  local src="$1"
+  local name="$2"
+  [ -x "$src" ] || return 0
+  ensure_shim_dir
+  ln -sf "$src" "$shim_dir/$name" || true
+  if [ -d /usr/local/bin ]; then
+    ln -sf "$src" "/usr/local/bin/$name" || true
+  fi
 }
 sync_user_bin_dir() {
   local src="$1"
   [ -d "$src" ] || return 0
-  [ -d /usr/local/bin ] || return 0
+  ensure_shim_dir
   for f in "$src"/*; do
     [ -f "$f" ] || continue
     [ -x "$f" ] || continue
-    ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+    ln -sf "$f" "$shim_dir/$(basename "$f")" || true
+    if [ -d /usr/local/bin ]; then
+      ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+    fi
   done
 }
-ensure_path_now /root/.local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin /usr/local/bin
+ensure_path_profile_loader
+ensure_path_now /root/.local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin "$shim_dir" /usr/local/bin
 persist_path_dir /root/.local/bin
 persist_path_dir /usr/local/go/bin
 persist_path_dir /root/go/bin
 persist_path_dir /root/.cargo/bin
-[ -x /usr/local/go/bin/go ] && ln -sf /usr/local/go/bin/go /usr/local/bin/go || true
-[ -x /root/.local/bin/uv ] && ln -sf /root/.local/bin/uv /usr/local/bin/uv || true
-[ -x /root/.cargo/bin/cargo ] && ln -sf /root/.cargo/bin/cargo /usr/local/bin/cargo || true
-[ -x /root/.cargo/bin/rustc ] && ln -sf /root/.cargo/bin/rustc /usr/local/bin/rustc || true
+persist_path_dir "$shim_dir"
+link_shim /usr/local/go/bin/go go
+link_shim /root/.local/bin/uv uv
+link_shim /root/.cargo/bin/cargo cargo
+link_shim /root/.cargo/bin/rustc rustc
 sync_user_bin_dir /root/.local/bin
 sync_user_bin_dir /root/go/bin
 sync_user_bin_dir /root/.cargo/bin
@@ -499,6 +523,8 @@ normalize_deps() {
 }
 DEPS="$(normalize_deps "$DEPS_SPEC")"
 [ -n "$DEPS" ] || DEPS="npm uv"
+path_profile="/root/.openclaw/runtime/path-decls/openclaw-runtime-path.sh"
+shim_dir="/root/.openclaw/runtime/path-shims"
 contains_dep() {
   local target="$1"
   for d in $DEPS; do
@@ -517,25 +543,48 @@ ensure_path_now() {
   done
 }
 
+ensure_path_profile_loader() {
+  local loader="/etc/profile.d/openclaw-runtime-path.sh"
+  mkdir -p /etc/profile.d || true
+  printf "%s\n" "[ -f ${path_profile} ] && . ${path_profile}" > "$loader" || true
+}
+
 persist_path_dir() {
   local d="$1"
   [ -d "$d" ] || return 0
   [ "$MODE" = "install" ] || return 0
-  local profile="/etc/profile.d/openclaw-runtime-path.sh"
-  mkdir -p /etc/profile.d || true
-  touch "$profile" || return 0
-  grep -F "export PATH=\"$d:\$PATH\"" "$profile" >/dev/null 2>&1 || \
-    echo "export PATH=\"$d:\$PATH\"" >> "$profile"
+  mkdir -p "$(dirname "$path_profile")" || true
+  touch "$path_profile" || return 0
+  grep -F "export PATH=\"$d:\$PATH\"" "$path_profile" >/dev/null 2>&1 || \
+    echo "export PATH=\"$d:\$PATH\"" >> "$path_profile"
+}
+
+ensure_shim_dir() {
+  mkdir -p "$shim_dir" || true
+}
+
+link_shim() {
+  local src="$1"
+  local name="$2"
+  [ -x "$src" ] || return 0
+  ensure_shim_dir
+  ln -sf "$src" "$shim_dir/$name" || true
+  if [ -d /usr/local/bin ]; then
+    ln -sf "$src" "/usr/local/bin/$name" || true
+  fi
 }
 
 sync_user_bin_dir() {
   local src="$1"
   [ -d "$src" ] || return 0
-  [ -d /usr/local/bin ] || return 0
+  ensure_shim_dir
   for f in "$src"/*; do
     [ -f "$f" ] || continue
     [ -x "$f" ] || continue
-    ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+    ln -sf "$f" "$shim_dir/$(basename "$f")" || true
+    if [ -d /usr/local/bin ]; then
+      ln -sf "$f" "/usr/local/bin/$(basename "$f")" || true
+    fi
   done
 }
 
@@ -544,13 +593,13 @@ fix_uv_path() {
   if has uv; then
     return 0
   fi
-  for cand in /root/.local/bin/uv /usr/local/bin/uv /usr/bin/uv; do
+  for cand in /root/.local/bin/uv "$shim_dir/uv" /usr/local/bin/uv /usr/bin/uv; do
     if [ -x "$cand" ]; then
       ensure_path_now "$(dirname "$cand")"
       persist_path_dir "$(dirname "$cand")"
-      if ! has uv && [ "$cand" != "/usr/local/bin/uv" ] && [ -d /usr/local/bin ]; then
-        ln -sf "$cand" /usr/local/bin/uv || true
-        ensure_path_now /usr/local/bin
+      if ! has uv && [ "$cand" != "$shim_dir/uv" ]; then
+        link_shim "$cand" uv
+        ensure_path_now "$shim_dir" /usr/local/bin
       fi
       break
     fi
@@ -559,32 +608,37 @@ fix_uv_path() {
 }
 
 fix_go_path() {
-  ensure_path_now /usr/local/go/bin /root/go/bin /usr/local/bin
+  ensure_path_profile_loader
+  ensure_path_now /usr/local/go/bin /root/go/bin "$shim_dir" /usr/local/bin
   persist_path_dir /usr/local/go/bin
   persist_path_dir /root/go/bin
-  if ! has go && [ -x /usr/local/go/bin/go ] && [ -d /usr/local/bin ]; then
-    ln -sf /usr/local/go/bin/go /usr/local/bin/go || true
-    ensure_path_now /usr/local/bin
+  persist_path_dir "$shim_dir"
+  if ! has go && [ -x /usr/local/go/bin/go ]; then
+    link_shim /usr/local/go/bin/go go
+    ensure_path_now "$shim_dir" /usr/local/bin
   fi
   sync_user_bin_dir /root/go/bin
 }
 
 fix_rust_path() {
-  ensure_path_now /root/.cargo/bin /usr/local/bin
+  ensure_path_profile_loader
+  ensure_path_now /root/.cargo/bin "$shim_dir" /usr/local/bin
   persist_path_dir /root/.cargo/bin
-  if ! has cargo && [ -x /root/.cargo/bin/cargo ] && [ -d /usr/local/bin ]; then
-    ln -sf /root/.cargo/bin/cargo /usr/local/bin/cargo || true
-    ensure_path_now /usr/local/bin
+  persist_path_dir "$shim_dir"
+  if ! has cargo && [ -x /root/.cargo/bin/cargo ]; then
+    link_shim /root/.cargo/bin/cargo cargo
+    ensure_path_now "$shim_dir" /usr/local/bin
   fi
-  if ! has rustc && [ -x /root/.cargo/bin/rustc ] && [ -d /usr/local/bin ]; then
-    ln -sf /root/.cargo/bin/rustc /usr/local/bin/rustc || true
-    ensure_path_now /usr/local/bin
+  if ! has rustc && [ -x /root/.cargo/bin/rustc ]; then
+    link_shim /root/.cargo/bin/rustc rustc
+    ensure_path_now "$shim_dir" /usr/local/bin
   fi
   sync_user_bin_dir /root/.cargo/bin
 }
 
 # Best-effort PATH repair for "installed but not in PATH" cases (especially go/uv/rust)
-ensure_path_now /root/.local/bin /usr/local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin
+ensure_path_profile_loader
+ensure_path_now /root/.local/bin "$shim_dir" /usr/local/bin /usr/local/go/bin /root/go/bin /root/.cargo/bin
 
 is_mountpoint_path() {
   local p="$1"

@@ -583,6 +583,11 @@ run_gateway_container() {
     volume_args+=("-v" "${data_dir}/runtime/root-cargo-bin:/root/.cargo/bin")
   fi
 
+  if [[ "${enable_bin_persist}" == "1" || "${enable_env_persist}" == "1" ]]; then
+    run_cmd mkdir -p "${data_dir}/runtime/path-shims" "${data_dir}/runtime/path-decls"
+    run_cmd touch "${data_dir}/runtime/path-decls/openclaw-runtime-path.sh"
+  fi
+
   if [[ "${enable_env_persist}" == "1" ]]; then
     if should_persist_node_modules_mount "${image}"; then
       persist_node_modules_mount="1"
@@ -1864,6 +1869,10 @@ runtime_persist_paths_desc() {
     lines+=("${data_dir}/runtime/root-local-bin")
     lines+=("${data_dir}/runtime/root-go-bin")
     lines+=("${data_dir}/runtime/root-cargo-bin")
+  fi
+  if [[ "${bin_choice}" == "1" || "${env_choice}" == "1" ]]; then
+    lines+=("${data_dir}/runtime/path-shims")
+    lines+=("${data_dir}/runtime/path-decls/openclaw-runtime-path.sh")
   fi
   if [[ "${env_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/usr-local-go")
