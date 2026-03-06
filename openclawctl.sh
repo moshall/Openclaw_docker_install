@@ -908,6 +908,18 @@ resolve_locked_image_ref() {
   printf '%s\n' "${locked}"
 }
 
+detect_local_locked_image_ref() {
+  local image="$1"
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+  local locked
+  locked=$(docker image inspect --format '{{index .RepoDigests 0}}' "${image}" 2>/dev/null || true)
+  locked=$(trim_surrounding_spaces "${locked}")
+  [[ -n "${locked}" && "${locked}" != "<no value>" && "${locked}" != "<nil>" ]] || return 1
+  printf '%s\n' "${locked}"
+}
+
 save_image_lock_profile() {
   local data_dir="$1"
   local requested_image="$2"
@@ -1107,6 +1119,14 @@ detect_existing_image() {
     detected=$(docker inspect -f '{{.Config.Image}}' "${name}" 2>/dev/null || true)
   fi
   if [[ -n "${detected}" ]]; then
+    if [[ -n "${data_dir}" ]]; then
+      local local_locked
+      local_locked=$(detect_local_locked_image_ref "${detected}" || true)
+      if [[ -n "${local_locked}" ]]; then
+        printf '%s\n' "${local_locked}"
+        return
+      fi
+    fi
     printf '%s\n' "${detected}"
     return
   fi
