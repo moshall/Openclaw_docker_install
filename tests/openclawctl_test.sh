@@ -300,7 +300,7 @@ fi
 assert_contains "${wizard_invalid_output}" "无效的 wizard"
 
 # 1) install wizard: single-screen grouped editing + chinese stable + deps default(npm/uv)
-install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
+install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n1\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
 install_output=$(printf "%s" "${install_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${install_output}" "1) 🚀 新安装 Docker 实例（推荐）"
@@ -332,7 +332,7 @@ assert_contains "${install_output}" "TOKEN="
 assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 
 # 2) upgrade wizard: single-screen grouped editing + official beta + env persistence(on) + deps include go
-upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
+upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n1\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_output}" "2) 🔄 升级 Docker 实例"
@@ -433,6 +433,7 @@ assert_contains "${install_extra_ports_output}" "-p 6000:6000/udp"
 install_extra_ports_guided_input=$'2\n1\n1\n2\n1\n2\nopenclaw_ports_guided\n4\n2\n4113\n18789\n3\n5001\n5001\n1\n1\n6000\n6000\n2\n2\nc\ny\n0\n'
 install_extra_ports_guided_output=$(printf "%s" "${install_extra_ports_guided_input}" | bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${install_extra_ports_guided_output}" "扩展端口映射管理"
+assert_contains "${install_extra_ports_guided_output}" "请选择（也可直接输入端口串） [3]"
 assert_contains "${install_extra_ports_guided_output}" "问答式重设（逐条添加）"
 assert_contains "${install_extra_ports_guided_output}" "-p 5001:5001"
 assert_contains "${install_extra_ports_guided_output}" "-p 6000:6000/udp"

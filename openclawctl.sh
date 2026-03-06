@@ -1939,7 +1939,7 @@ prompt_extra_ports_configuration() {
     echo "  3) 问答式重设（逐条添加）" >&2
     echo "  m) 手动输入（兼容旧格式）" >&2
 
-    choice=$(read_choice_default "请选择（也可直接输入端口串）" "1")
+    choice=$(read_choice_default "请选择（也可直接输入端口串）" "3")
     choice=$(trim_surrounding_spaces "${choice}")
 
     case "${choice}" in
