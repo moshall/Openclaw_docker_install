@@ -55,6 +55,15 @@ assert_contains "${io_sanitized_output}" "abcd"
 image_fallback_output=$(OPENCLAWCTL_TEST_OFFICIAL_TAGS='latest,beta,2026.2.26,2026.2.20' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; official_openclaw_repo_path(){ printf "1panel/openclaw\n"; }; resolve_official_tag_with_fallback "upgrade" "docker.io/1panel/openclaw:260226"' 2>&1 || true)
 assert_contains "${image_fallback_output}" "docker.io/1panel/openclaw:2026.2.26"
 
+# 0d2) native npm version candidates should follow selected channel
+native_versions_stable_output=$(OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0-beta.1,1.2.0,1.2.1-nightly.1,1.3.0' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; list_native_npm_versions_for_selection "@qingchencloud/openclaw-zh" "2" "1" "5"' 2>&1 || true)
+assert_contains "${native_versions_stable_output}" "1.3.0"
+assert_contains "${native_versions_stable_output}" "1.2.0"
+assert_not_contains "${native_versions_stable_output}" "1.2.1-nightly.1"
+
+native_versions_nightly_output=$(OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0-beta.1,1.2.0,1.2.1-nightly.1,1.3.0' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; list_native_npm_versions_for_selection "@qingchencloud/openclaw-zh" "2" "2" "5"' 2>&1 || true)
+assert_contains "${native_versions_nightly_output}" "1.2.1-nightly.1"
+
 # 0e) persist helpers should fallback easyclaw web host port on conflict
 persist_easyclaw_mapping_output=$(OPENCLAWCTL_TEST_OCCUPIED_PORTS='4231' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; EASYCLAW_DEFAULT_WEB_PORT=4231; CLAUDECODEUI_RESERVED_CONTAINER_PORT_1=7201; CLAUDECODEUI_RESERVED_CONTAINER_PORT_2=7202; CLAUDECODEUI_RESERVED_CONTAINER_PORT_3=7203; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; ensure_easyclaw_web_port_mapping "1" "4113" "18789" ""' 2>&1 || true)
 assert_contains "${persist_easyclaw_mapping_output}" "5231:4231"
@@ -525,6 +534,12 @@ assert_contains "${native_hostdeps_output}" "native 宿主机依赖检查"
 assert_contains "${native_hostdeps_output}" "deb.nodesource.com/setup_22.x"
 assert_contains "${native_hostdeps_output}" "build-essential"
 assert_contains "${native_hostdeps_output}" "python3-pip"
+
+native_interactive_version_output=$(printf '2\n1\n2\n2\nopenclaw_native_pick\n\n\n\n\ny\n' | OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0,1.2.0' bash "${SCRIPT_PATH}" --dry-run --wizard native 2>&1)
+assert_contains "${native_interactive_version_output}" "版本策略: 指定版本（列表选择）"
+assert_contains "${native_interactive_version_output}" "可选版本（最近）"
+assert_contains "${native_interactive_version_output}" "@qingchencloud/openclaw-zh@1.1.0"
+assert_not_contains "${native_interactive_version_output}" "可选指定 tag（留空按通道）"
 
 # 19b) 1panel wizard should support linux dry-run install and reject non-linux
 panel_install_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-install <<< $'y\n')

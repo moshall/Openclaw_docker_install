@@ -2934,7 +2934,10 @@ native_npm_wizard() {
     echo "  2) nightly"
   fi
   channel_choice=$(read_choice_default "请选择" "${channel_choice}")
-  explicit_tag=$(read_with_default "可选指定 tag（留空按通道）" "${explicit_tag}")
+  local package_name default_tag
+  package_name=$(native_package_for_source_choice "${source_choice}")
+  default_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "")
+  explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}")
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
   name=$(read_container_name "应用名（仅用于配置记录）")
   data_dir=$(read_with_default "数据目录" "${data_dir}")
@@ -2945,9 +2948,16 @@ native_npm_wizard() {
   skill_set=$(normalize_skill_set "${skill_set}")
 
   printf '\n--- 执行清单（确认前） ---\n'
+  local resolved_version_tag
+  resolved_version_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "${explicit_tag}")
   echo "来源: $(source_choice_label "${source_choice}")"
   echo "通道: $(channel_choice_label "${channel_choice}")"
-  echo "指定 tag: $(value_or_unset "${explicit_tag}")"
+  if [[ -n "${explicit_tag}" ]]; then
+    echo "版本策略: 指定版本（列表选择）"
+  else
+    echo "版本策略: 通道默认（推荐）"
+  fi
+  echo "版本号: ${resolved_version_tag}"
   echo "应用名: ${name}"
   echo "数据目录: ${data_dir}"
   echo "安装前缀: ${native_prefix}"
@@ -3002,7 +3012,10 @@ native_upgrade_wizard() {
     echo "  2) nightly"
   fi
   channel_choice=$(read_choice_default "请选择" "${channel_choice}")
-  explicit_tag=$(read_with_default "可选指定 tag（留空按通道）" "${explicit_tag}")
+  local package_name default_tag
+  package_name=$(native_package_for_source_choice "${source_choice}")
+  default_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "")
+  explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}")
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
   data_dir=$(read_with_default "数据目录" "${data_dir}")
   native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
@@ -3024,6 +3037,8 @@ native_upgrade_wizard() {
   fi
 
   printf '\n--- 执行清单（确认前） ---\n'
+  local resolved_version_tag
+  resolved_version_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "${explicit_tag}")
   if [[ "${mode_choice}" == "2" ]]; then
     echo "模式: 全新重装"
     echo "重装数据策略: $(choice_to_yes_no "${reinstall_data_mode}")（是=保留）"
@@ -3032,7 +3047,12 @@ native_upgrade_wizard() {
   fi
   echo "来源: $(source_choice_label "${source_choice}")"
   echo "通道: $(channel_choice_label "${channel_choice}")"
-  echo "指定 tag: $(value_or_unset "${explicit_tag}")"
+  if [[ -n "${explicit_tag}" ]]; then
+    echo "版本策略: 指定版本（列表选择）"
+  else
+    echo "版本策略: 通道默认（推荐）"
+  fi
+  echo "版本号: ${resolved_version_tag}"
   echo "应用名: ${name}"
   echo "数据目录: ${data_dir}"
   echo "安装前缀: ${native_prefix}"

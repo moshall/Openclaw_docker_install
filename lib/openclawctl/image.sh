@@ -320,6 +320,143 @@ prompt_official_openclaw_tag() {
   printf '%s\n' "${current_tag}"
 }
 
+native_is_prerelease_version() {
+  local version="$1"
+  local lower
+  lower=$(printf '%s' "${version}" | tr '[:upper:]' '[:lower:]')
+  [[ "${lower}" == *"-"* || "${lower}" == *"beta"* || "${lower}" == *"nightly"* || "${lower}" == *"alpha"* || "${lower}" == *"rc"* || "${lower}" == *"canary"* || "${lower}" == *"dev"* ]]
+}
+
+fetch_native_npm_versions() {
+  local package_name="$1"
+  if [[ -n "${OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS:-}" ]]; then
+    printf '%s\n' "${OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS}" | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | awk 'NF && !seen[$0]++ {print $0}'
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local raw
+  raw=$(npm view "${package_name}" versions --json 2>/dev/null || true)
+  if [[ -z "${raw}" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${raw}" | tr -d '[]"' | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | awk 'NF && !seen[$0]++ {print $0}'
+}
+
+list_native_npm_versions_for_selection() {
+  local package_name="$1"
+  local source_choice="$2"
+  local channel_choice="$3"
+  local limit="${4:-12}"
+  local -a all_versions=()
+  local -a filtered_versions=()
+  local -a candidate_versions=()
+  local version
+
+  while IFS= read -r version; do
+    version=$(printf '%s' "${version}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    [[ -z "${version}" ]] && continue
+    all_versions+=("${version}")
+  done < <(fetch_native_npm_versions "${package_name}" || true)
+
+  if [[ "${#all_versions[@]}" -eq 0 ]]; then
+    return 1
+  fi
+
+  local wants_prerelease="0"
+  if [[ "${channel_choice}" == "2" ]]; then
+    wants_prerelease="1"
+  fi
+  if [[ "${source_choice}" != "1" && "${source_choice}" != "2" ]]; then
+    wants_prerelease="0"
+  fi
+
+  local item
+  for item in "${all_versions[@]}"; do
+    if [[ "${wants_prerelease}" == "1" ]]; then
+      if native_is_prerelease_version "${item}"; then
+        filtered_versions+=("${item}")
+      fi
+    else
+      if ! native_is_prerelease_version "${item}"; then
+        filtered_versions+=("${item}")
+      fi
+    fi
+  done
+
+  if [[ "${#filtered_versions[@]}" -gt 0 ]]; then
+    candidate_versions=("${filtered_versions[@]}")
+  else
+    candidate_versions=("${all_versions[@]}")
+  fi
+
+  local count=0
+  local idx
+  for ((idx=${#candidate_versions[@]} - 1; idx>=0; idx--)); do
+    item="${candidate_versions[$idx]}"
+    [[ -z "${item}" ]] && continue
+    printf '%s\n' "${item}"
+    count=$((count + 1))
+    if [[ "${count}" -ge "${limit}" ]]; then
+      break
+    fi
+  done
+}
+
+prompt_native_npm_version_choice() {
+  local package_name="$1"
+  local source_choice="$2"
+  local channel_choice="$3"
+  local default_tag="$4"
+
+  echo "版本策略:" >&2
+  echo "  1) 通道默认（推荐）" >&2
+  echo "  2) 指定版本（列表选择）" >&2
+
+  local mode_choice
+  mode_choice=$(read_choice_default "请选择" "1")
+  mode_choice=$(printf '%s' "${mode_choice}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+  if [[ "${mode_choice}" != "2" ]]; then
+    printf '%s\n' ""
+    return
+  fi
+
+  local -a versions=()
+  local version
+  while IFS= read -r version; do
+    version=$(printf '%s' "${version}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    [[ -z "${version}" ]] && continue
+    versions+=("${version}")
+  done < <(list_native_npm_versions_for_selection "${package_name}" "${source_choice}" "${channel_choice}" "12" || true)
+
+  if [[ "${#versions[@]}" -eq 0 ]]; then
+    log_error "暂未拉取到可选版本，已回退到通道默认（${default_tag}）"
+    printf '%s\n' ""
+    return
+  fi
+
+  echo "可选版本（最近）:" >&2
+  local i
+  for i in "${!versions[@]}"; do
+    printf '  %d) %s\n' "$((i + 1))" "${versions[$i]}" >&2
+  done
+
+  local selected
+  selected=$(read_choice_default "请选择版本" "1")
+  selected=$(printf '%s' "${selected}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+  if [[ "${selected}" =~ ^[0-9]+$ ]] && ((selected >= 1)) && ((selected <= ${#versions[@]})); then
+    printf '%s\n' "${versions[$((selected - 1))]}"
+    return
+  fi
+
+  log_error "无效选择，已回退到通道默认（${default_tag}）"
+  printf '%s\n' ""
+}
+
 resolve_image() {
   local source_choice="$1"
   local channel_choice="$2"
