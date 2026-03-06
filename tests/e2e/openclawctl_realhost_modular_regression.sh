@@ -23,6 +23,12 @@ assert_contains_file() {
   grep -q -- "${needle}" "${file}" || fail "expected ${file} to contain: ${needle}"
 }
 
+assert_contains_text() {
+  local text="$1"
+  local needle="$2"
+  [[ "${text}" == *"${needle}"* ]] || fail "expected output to contain: ${needle}"
+}
+
 run_wizard_cfg() {
   local wizard="$1"
   local cfg="$2"
@@ -131,7 +137,23 @@ STRICT_REPORT_PATH=$(extract_strict_report "${LOG_DIR}/adopt.log")
 assert_contains_file "${STRICT_REPORT_PATH}" '"action"'
 assert_contains_file "${STRICT_REPORT_PATH}" '"status"'
 
+# Scenario 5: rebuild dry-run should default to locked image
+IMAGE_LOCK_PROFILE="${DATA_DIR}/runtime/image-lock.profile"
+[[ -f "${IMAGE_LOCK_PROFILE}" ]] || fail "image-lock profile missing: ${IMAGE_LOCK_PROFILE}"
+LOCKED_IMAGE=$(awk -F '=' '$1=="LOCKED_IMAGE"{print substr($0, index($0, "=")+1)}' "${IMAGE_LOCK_PROFILE}" | tail -n1 | tr -d '\r')
+[[ -n "${LOCKED_IMAGE}" ]] || fail "LOCKED_IMAGE missing in ${IMAGE_LOCK_PROFILE}"
+
+REBUILD_DEFAULT_OUTPUT=$(printf '%s\nq\n' "${NAME}" | OPENCLAWCTL_NO_CLEAR=1 bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains_text "${REBUILD_DEFAULT_OUTPUT}" "镜像=${LOCKED_IMAGE}"
+
+# Scenario 6: rebuild dry-run should support explicit latest mode
+REBUILD_LATEST_OUTPUT=$(printf '%s\n1\n2\nq\n' "${NAME}" | OPENCLAWCTL_NO_CLEAR=1 bash "${SCRIPT_PATH}" --dry-run --wizard rebuild 2>&1 || true)
+assert_contains_text "${REBUILD_LATEST_OUTPUT}" "按 latest 方式重建（可能升级）"
+assert_contains_text "${REBUILD_LATEST_OUTPUT}" "已更新：镜像=docker.io/1panel/openclaw:latest"
+
 echo "[PASS] modular real-host regression done"
 echo "LOG_DIR=${LOG_DIR}"
 echo "STRICT_REPORT_PATH=${STRICT_REPORT_PATH}"
+echo "IMAGE_LOCK_PROFILE=${IMAGE_LOCK_PROFILE}"
+echo "LOCKED_IMAGE=${LOCKED_IMAGE}"
 echo "PORT_MAPPING_EVIDENCE=$(docker port "${NAME}" 4231/tcp 2>/dev/null || true)"
