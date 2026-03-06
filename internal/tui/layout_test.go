@@ -34,9 +34,11 @@ func TestLayoutViewIncludesCoreRegions(t *testing.T) {
 
 	view := model.View(120, 32)
 	for _, needle := range []string{
-		"OpenClaw Control Center",
-		"操作菜单",
-		"安装配置",
+		"OpenClaw 安装助手 · 增强模式",
+		"菜单（↑↓ 选择）",
+		"当前操作",
+		"创建新的 OpenClaw 实例",
+		"参数表单 · 安装配置",
 		"命令预览",
 		"bash openclawctl.sh --wizard install --dry-run",
 	} {

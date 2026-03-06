@@ -68,16 +68,10 @@ func (m LayoutModel) View(width, height int) string {
 	}
 	_ = height
 
-	header := m.theme.header.Render("OpenClaw Control Center")
+	header := m.theme.header.Render("OpenClaw 安装助手 · 增强模式")
+	status := m.theme.statusText.Render("状态: " + m.Status)
 
-	leftWidth := 34
-	rightWidth := width - leftWidth - 3
-	if rightWidth < 40 {
-		rightWidth = 40
-		leftWidth = width - rightWidth - 3
-	}
-
-	menuLines := []string{"操作菜单"}
+	bodyLines := []string{m.theme.cardTitle.Render("菜单（↑↓ 选择）")}
 	for index, action := range m.Actions {
 		prefix := "  "
 		if index == m.SelectedAction {
@@ -85,27 +79,41 @@ func (m LayoutModel) View(width, height int) string {
 		}
 		line := prefix + action.Label
 		if index == m.SelectedAction {
-			menuLines = append(menuLines, m.theme.menuActive.Render(line))
+			bodyLines = append(bodyLines, m.theme.menuActive.Render(line))
 			continue
 		}
-		menuLines = append(menuLines, m.theme.menuNormal.Render(line))
+		bodyLines = append(bodyLines, m.theme.menuNormal.Render(line))
 	}
-	leftPanel := m.theme.card.Width(leftWidth).Render(strings.Join(menuLines, "\n"))
 
-	bodyLines := []string{m.RightTitle}
+	bodyLines = append(bodyLines, "")
+	bodyLines = append(bodyLines, m.theme.cardTitle.Render("当前操作"))
+	selectedActionLabel := "未选择操作"
+	selectedActionDesc := "请选择菜单项查看说明。"
+	if m.SelectedAction >= 0 && m.SelectedAction < len(m.Actions) {
+		selectedAction := m.Actions[m.SelectedAction]
+		selectedActionLabel = selectedAction.Label
+		if trimmed := strings.TrimSpace(selectedAction.Description); trimmed != "" {
+			selectedActionDesc = trimmed
+		}
+	}
+	bodyLines = append(bodyLines, m.theme.menuActive.Render("▶ "+selectedActionLabel))
+	bodyLines = append(bodyLines, m.theme.contentText.Render(selectedActionDesc))
+
+	formTitle := strings.TrimSpace(m.RightTitle)
+	if formTitle == "" {
+		formTitle = "参数编辑"
+	}
+	bodyLines = append(bodyLines, "")
+	bodyLines = append(bodyLines, m.theme.cardTitle.Render("参数表单 · "+formTitle))
 	if len(m.RightBodyLines) == 0 {
-		bodyLines = append(bodyLines, m.theme.contentText.Render("选择左侧操作后，在此处编辑参数。"))
+		bodyLines = append(bodyLines, m.theme.contentText.Render("当前操作无需额外参数。"))
 	} else {
 		for _, line := range m.RightBodyLines {
 			bodyLines = append(bodyLines, m.theme.contentText.Render(line))
 		}
 	}
-	rightPanel := m.theme.card.Width(rightWidth).Render(
-		m.theme.cardTitle.Render(m.RightTitle) + "\n" + strings.Join(bodyLines[1:], "\n"),
-	)
 
-	mainRow := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, " ", rightPanel)
-
+	bodyLines = append(bodyLines, "")
 	previewLines := []string{m.theme.cardTitle.Render("命令预览")}
 	if len(m.PreviewLines) == 0 {
 		previewLines = append(previewLines, m.theme.contentText.Render("暂无命令预览"))
@@ -114,11 +122,10 @@ func (m LayoutModel) View(width, height int) string {
 			previewLines = append(previewLines, m.theme.contentText.Render(line))
 		}
 	}
-	previewLines = append(previewLines, "")
-	previewLines = append(previewLines, m.theme.statusText.Render("状态: "+m.Status))
-	previewPanel := m.theme.card.Width(width - 1).Render(strings.Join(previewLines, "\n"))
+	bodyLines = append(bodyLines, strings.Join(previewLines, "\n"))
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, mainRow, previewPanel)
+	panel := m.theme.card.Width(width - 1).Render(strings.Join(bodyLines, "\n"))
+	return lipgloss.JoinVertical(lipgloss.Left, header, status, panel)
 }
 
 func newTheme(profile ColorProfile) theme {
