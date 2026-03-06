@@ -429,6 +429,14 @@ assert_contains "${install_extra_ports_output}" "-p 4113:18789"
 assert_contains "${install_extra_ports_output}" "-p 5001:5001"
 assert_contains "${install_extra_ports_output}" "-p 6000:6000/udp"
 
+# 9b) install wizard should support guided extra port collection form
+install_extra_ports_guided_input=$'2\n1\n1\n2\n1\n2\nopenclaw_ports_guided\n4\n2\n4113\n18789\n3\n5001\n5001\n1\n1\n6000\n6000\n2\n2\nc\ny\n0\n'
+install_extra_ports_guided_output=$(printf "%s" "${install_extra_ports_guided_input}" | bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${install_extra_ports_guided_output}" "扩展端口映射管理"
+assert_contains "${install_extra_ports_guided_output}" "问答式重设（逐条添加）"
+assert_contains "${install_extra_ports_guided_output}" "-p 5001:5001"
+assert_contains "${install_extra_ports_guided_output}" "-p 6000:6000/udp"
+
 # 10) extra ports input should ignore control chars and not corrupt menu output
 install_extra_ports_ctrl_input=$'2\n1\n1\n2\n1\n2\nopenclaw_ports_ctrl\n4\n2\n4113\n18789\n5002:5002\e[D\e[A\nc\ny\n0\n'
 install_extra_ports_ctrl_output=$(printf "%b" "${install_extra_ports_ctrl_input}" | bash "${SCRIPT_PATH}" --dry-run)

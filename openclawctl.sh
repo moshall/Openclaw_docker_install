@@ -1847,6 +1847,147 @@ display_port_mappings() {
   fi
 }
 
+is_valid_port_number() {
+  local value="${1:-}"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  if [[ "${value}" -lt 1 || "${value}" -gt 65535 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+collect_extra_ports_guided() {
+  local main_host_port="$1"
+  local main_container_port="$2"
+  local collected=""
+  local host_entry container_entry proto_choice proto token candidate normalized continue_choice
+
+  while true; do
+    printf '宿主机扩展端口（留空结束）: ' >&2
+    IFS= read -r host_entry
+    host_entry=$(sanitize_user_input "${host_entry}")
+    host_entry=$(trim_surrounding_spaces "${host_entry}")
+    if [[ -z "${host_entry}" ]]; then
+      break
+    fi
+    if ! is_valid_port_number "${host_entry}"; then
+      log_error "宿主机端口无效: ${host_entry}（范围 1-65535）"
+      continue
+    fi
+
+    container_entry=$(read_required "容器内部扩展端口")
+    container_entry=$(trim_surrounding_spaces "${container_entry}")
+    if ! is_valid_port_number "${container_entry}"; then
+      log_error "容器内部端口无效: ${container_entry}（范围 1-65535）"
+      continue
+    fi
+
+    echo "协议类型:" >&2
+    echo "  1) tcp（默认）" >&2
+    echo "  2) udp" >&2
+    proto_choice=$(read_choice_default "请选择" "1")
+    case "${proto_choice}" in
+      1) proto="tcp" ;;
+      2) proto="udp" ;;
+      *)
+        log_error "无效选择，默认按 tcp 处理"
+        proto="tcp"
+        ;;
+    esac
+
+    token="${host_entry}:${container_entry}"
+    [[ "${proto}" == "udp" ]] && token="${token}/udp"
+    candidate="${collected}${collected:+ }${token}"
+
+    if normalized=$(normalize_extra_ports "${candidate}" "${main_host_port}" "${main_container_port}"); then
+      collected="${normalized}"
+      printf '[INFO] 已加入扩展端口: %s\n' "${token}" >&2
+      printf '[INFO] 当前扩展端口: %s\n' "$(display_port_mappings "${collected}")" >&2
+    else
+      log_error "扩展端口条目无效，已忽略: ${token}"
+      continue
+    fi
+
+    echo "继续添加扩展端口:" >&2
+    echo "  1) 是" >&2
+    echo "  2) 否" >&2
+    continue_choice=$(read_choice_default "请选择" "2")
+    case "${continue_choice}" in
+      1) ;;
+      2) break ;;
+      *)
+        log_error "无效选择，默认结束添加"
+        break
+        ;;
+    esac
+  done
+
+  printf '%s\n' "${collected}"
+}
+
+prompt_extra_ports_configuration() {
+  local current_extra_ports="${1:-}"
+  local main_host_port="$2"
+  local main_container_port="$3"
+  local choice raw_input normalized
+
+  while true; do
+    echo "扩展端口映射管理:" >&2
+    echo "  当前: $(display_port_mappings "${current_extra_ports}")" >&2
+    echo "  1) 保留当前" >&2
+    echo "  2) 清空映射" >&2
+    echo "  3) 问答式重设（逐条添加）" >&2
+    echo "  m) 手动输入（兼容旧格式）" >&2
+
+    choice=$(read_choice_default "请选择（也可直接输入端口串）" "1")
+    choice=$(trim_surrounding_spaces "${choice}")
+
+    case "${choice}" in
+      1)
+        printf '%s\n' "${current_extra_ports}"
+        return 0
+        ;;
+      2)
+        printf '\n'
+        return 0
+        ;;
+      3)
+        collect_extra_ports_guided "${main_host_port}" "${main_container_port}"
+        return 0
+        ;;
+      m|M)
+        raw_input=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${current_extra_ports}")
+        raw_input=$(sanitize_port_mapping_input "${raw_input}")
+        if [[ -z "${raw_input}" ]]; then
+          printf '\n'
+          return 0
+        fi
+        if normalized=$(normalize_extra_ports "${raw_input}" "${main_host_port}" "${main_container_port}"); then
+          printf '%s\n' "${normalized}"
+          return 0
+        fi
+        log_error "扩展端口映射输入无效，请重试"
+        ;;
+      "")
+        printf '%s\n' "${current_extra_ports}"
+        return 0
+        ;;
+      *)
+        raw_input=$(sanitize_port_mapping_input "${choice}")
+        if [[ -n "${raw_input}" && "${raw_input}" == *:* ]]; then
+          if normalized=$(normalize_extra_ports "${raw_input}" "${main_host_port}" "${main_container_port}"); then
+            printf '%s\n' "${normalized}"
+            return 0
+          fi
+          log_error "扩展端口映射输入无效，请重试"
+        else
+          log_error "无效选择"
+        fi
+        ;;
+    esac
+  done
+}
+
 install_default_data_dir_desc() {
   local name="${1:-}"
   local root
@@ -3577,16 +3718,7 @@ install_wizard() {
         bind_choice=$(read_choice_default "请选择" "${bind_choice}")
         host_port=$(read_with_default "宿主机端口" "${host_port}")
         container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        local input_extra_ports
-        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
-        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
-        if [[ -z "${input_extra_ports}" ]]; then
-          extra_ports=""
-        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
-          extra_ports="${normalized_input_extra_ports}"
-        else
-          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
-        fi
+        extra_ports=$(prompt_extra_ports_configuration "${extra_ports}" "${host_port}" "${container_port}")
         log_info "已更新：$(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
         ;;
       5)
@@ -3879,16 +4011,7 @@ upgrade_wizard() {
       3)
         host_port=$(read_with_default "宿主机端口" "${host_port}")
         container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        local input_extra_ports
-        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
-        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
-        if [[ -z "${input_extra_ports}" ]]; then
-          extra_ports=""
-        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
-          extra_ports="${normalized_input_extra_ports}"
-        else
-          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
-        fi
+        extra_ports=$(prompt_extra_ports_configuration "${extra_ports}" "${host_port}" "${container_port}")
         log_info "已更新：$(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
         ;;
       4)
@@ -4168,16 +4291,7 @@ safe_rebuild_wizard() {
       3)
         host_port=$(read_with_default "宿主机端口" "${host_port}")
         container_port=$(read_with_default "OpenClaw 容器内部端口" "${container_port}")
-        local input_extra_ports
-        input_extra_ports=$(read_with_default "扩展端口映射（逗号分隔，如 5001:5001,6000:6000/udp）" "${extra_ports}")
-        input_extra_ports=$(sanitize_port_mapping_input "${input_extra_ports}")
-        if [[ -z "${input_extra_ports}" ]]; then
-          extra_ports=""
-        elif normalized_input_extra_ports=$(normalize_extra_ports "${input_extra_ports}" "${host_port}" "${container_port}"); then
-          extra_ports="${normalized_input_extra_ports}"
-        else
-          log_error "扩展端口映射输入无效，已保留原配置: $(display_port_mappings "${extra_ports}")"
-        fi
+        extra_ports=$(prompt_extra_ports_configuration "${extra_ports}" "${host_port}" "${container_port}")
         log_info "已更新：$(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "1")"
         ;;
       4)
