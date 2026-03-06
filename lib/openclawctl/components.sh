@@ -212,6 +212,52 @@ skill_set_summary() {
   optional_list_summary "skill" "$(normalize_skill_set "$*")"
 }
 
+prompt_optional_component_selection() {
+  local mode="$1"
+  local current_raw="${2:-}"
+  local current selected token label default_choice choice
+  selected=""
+
+  if [[ "${mode}" == "software" ]]; then
+    current=$(normalize_software_set "${current_raw}")
+    echo "请选择可选软件（1=安装, 2=跳过）:" >&2
+    for token in ${OPTIONAL_SOFTWARE_ALL}; do
+      label=$(optional_software_label "${token}")
+      default_choice="2"
+      token_in_list "${token}" ${current} && default_choice="1"
+      echo "${label}:" >&2
+      echo "  1) 安装" >&2
+      echo "  2) 跳过" >&2
+      choice=$(read_choice_default "请选择" "${default_choice}")
+      [[ "${choice}" == "1" ]] && selected="${selected} ${token}"
+    done
+    normalize_software_set "${selected}"
+    return
+  fi
+
+  current=$(normalize_skill_set "${current_raw}")
+  echo "请选择预装 Skills（1=安装, 2=跳过）:" >&2
+  for token in ${OPTIONAL_SKILL_ALL}; do
+    label=$(optional_skill_label "${token}")
+    default_choice="2"
+    token_in_list "${token}" ${current} && default_choice="1"
+    echo "${label}:" >&2
+    echo "  1) 安装" >&2
+    echo "  2) 跳过" >&2
+    choice=$(read_choice_default "请选择" "${default_choice}")
+    [[ "${choice}" == "1" ]] && selected="${selected} ${token}"
+  done
+  normalize_skill_set "${selected}"
+}
+
+prompt_software_set_selection() {
+  prompt_optional_component_selection "software" "${1:-}"
+}
+
+prompt_skill_set_selection() {
+  prompt_optional_component_selection "skill" "${1:-}"
+}
+
 ensure_dep_set_for_software() {
   local dep_set="$1"
   local software_set

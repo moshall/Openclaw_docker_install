@@ -535,11 +535,21 @@ assert_contains "${native_hostdeps_output}" "deb.nodesource.com/setup_22.x"
 assert_contains "${native_hostdeps_output}" "build-essential"
 assert_contains "${native_hostdeps_output}" "python3-pip"
 
-native_interactive_version_output=$(printf '2\n3\n2\nopenclaw_native_pick\n\n\n\n\ny\n' | OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0,1.2.0' bash "${SCRIPT_PATH}" --dry-run --wizard native 2>&1)
+native_components_cfg="${tmpdir}/native-components.conf"
+cat > "${native_components_cfg}" <<'EOF'
+software|gh|GitHub CLI(gh)|gh-release||
+skill|obsidian-skills|Obsidian Skills|git-clone|https://github.com/kepano/obsidian-skills.git|
+EOF
+native_interactive_version_output=$(printf '2\n3\n2\nopenclaw_native_pick\n\n\n2\n2\ny\n' | OPENCLAWCTL_COMPONENTS_FILE="${native_components_cfg}" OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0,1.2.0' bash "${SCRIPT_PATH}" --dry-run --wizard native 2>&1)
 assert_contains "${native_interactive_version_output}" "  3) 指定版本（列表选择）"
 assert_contains "${native_interactive_version_output}" "可选版本（最近）"
 assert_contains "${native_interactive_version_output}" "@qingchencloud/openclaw-zh@1.1.0"
 assert_not_contains "${native_interactive_version_output}" "版本策略:"
+assert_contains "${native_interactive_version_output}" "请选择可选软件（1=安装, 2=跳过）"
+assert_contains "${native_interactive_version_output}" "请选择预装 Skills（1=安装, 2=跳过）"
+assert_not_contains "${native_interactive_version_output}" "可选软件（逗号或空格分隔，如 gh,codex）"
+assert_not_contains "${native_interactive_version_output}" "预装 Skills（逗号或空格分隔，如 obsidian-skills）"
+assert_contains "${native_interactive_version_output}" "npm 安装前缀目录用于存放 openclaw 命令"
 
 # 19b) 1panel wizard should support linux dry-run install and reject non-linux
 panel_install_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-install <<< $'y\n')

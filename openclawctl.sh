@@ -2946,12 +2946,15 @@ native_npm_wizard() {
   fi
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
   name=$(read_container_name "应用名（仅用于配置记录）")
+  local previous_data_dir="${data_dir}"
   data_dir=$(read_with_default "数据目录" "${data_dir}")
-  native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
-  software_set=$(read_with_default "可选软件（逗号或空格分隔，如 gh,codex）" "${software_set}")
-  skill_set=$(read_with_default "预装 Skills（逗号或空格分隔，如 obsidian-skills）" "${skill_set}")
-  software_set=$(normalize_software_set "${software_set}")
-  skill_set=$(normalize_skill_set "${skill_set}")
+  if [[ "${native_prefix}" == "${previous_data_dir}/native" ]]; then
+    native_prefix="${data_dir}/native"
+  fi
+  echo "说明：npm 安装前缀目录用于存放 openclaw 命令，最终可执行文件位于 <前缀>/bin（通常直接回车默认即可）。"
+  native_prefix=$(read_with_default "npm 安装前缀目录（用于命令安装）" "${native_prefix}")
+  software_set=$(prompt_software_set_selection "${software_set}")
+  skill_set=$(prompt_skill_set_selection "${skill_set}")
 
   printf '\n--- 执行清单（确认前） ---\n'
   local resolved_version_tag
@@ -3024,16 +3027,19 @@ native_upgrade_wizard() {
     explicit_tag=""
   fi
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
+  local previous_data_dir="${data_dir}"
   data_dir=$(read_with_default "数据目录" "${data_dir}")
-  native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
+  if [[ "${native_prefix}" == "${previous_data_dir}/native" ]]; then
+    native_prefix="${data_dir}/native"
+  fi
+  echo "说明：npm 安装前缀目录用于存放 openclaw 命令，最终可执行文件位于 <前缀>/bin（通常直接回车默认即可）。"
+  native_prefix=$(read_with_default "npm 安装前缀目录（用于命令安装）" "${native_prefix}")
 
   local software_set skill_set
   software_set=$(load_software_profile "${data_dir}")
   skill_set=$(load_skill_profile "${data_dir}")
-  software_set=$(read_with_default "可选软件（默认读取已保存档案）" "${software_set}")
-  skill_set=$(read_with_default "预装 Skills（默认读取已保存档案）" "${skill_set}")
-  software_set=$(normalize_software_set "${software_set}")
-  skill_set=$(normalize_skill_set "${skill_set}")
+  software_set=$(prompt_software_set_selection "${software_set}")
+  skill_set=$(prompt_skill_set_selection "${skill_set}")
 
   local reinstall_data_mode="1"
   if [[ "${mode_choice}" == "2" ]]; then
