@@ -44,7 +44,7 @@ show_main_menu() {
   echo "1) 🧪 Native 实体机安装与管理（Mac/Linux）"
   echo "2) 🐳 Docker 隔离环境安装与管理（Mac/Linux）"
   echo "3) ☁️ 远程 VPS 1Panel 版 Docker 隔离环境安装与管理（Linux）"
-  echo "9) 🧰 高级模式（兼容旧菜单）"
+  echo "9) 🧰 高级模式（开发者）"
   echo "0) 退出"
 }
 
@@ -68,15 +68,35 @@ show_docker_menu() {
   echo "==============================="
   echo " Docker 隔离环境安装与管理"
   echo "==============================="
-  echo "1) 🚀 安装新实例"
-  echo "2) 🔄 升级已有实例"
-  echo "3) 🛠️ 调整或重建实例"
-  echo "4) 📦 管理 EasyClaw 工具"
-  echo "5) 🔧 检查或补齐运行环境"
-  echo "6) 🗑️ 卸载实例"
-  echo "7) 🔄 接管外部安装实例"
-  echo "8) 🧩 追加 Runtime 持久化"
-  echo "9) 📄 查看部署信息"
+  echo "1) 🚀 新安装 Docker 实例（推荐）"
+  echo "2) 🔄 升级 Docker 实例"
+  echo "3) 🛠️ 调整配置并重建"
+  echo "4) 🔧 运行环境维护"
+  echo "5) 🔄 接管已有 Docker 实例"
+  echo "6) 📄 查看 Docker 部署信息"
+  echo "7) 🗑️ 卸载 Docker 实例"
+  echo "0) 返回上级"
+}
+
+show_docker_rebuild_menu() {
+  clear_interactive_screen
+  echo
+  echo "==============================="
+  echo " Docker 调整配置并重建"
+  echo "==============================="
+  echo "1) 🛠️ 修改端口/数据目录后重建"
+  echo "2) 🧩 追加 Runtime 持久化"
+  echo "0) 返回上级"
+}
+
+show_docker_maintenance_menu() {
+  clear_interactive_screen
+  echo
+  echo "==============================="
+  echo " Docker 运行环境维护"
+  echo "==============================="
+  echo "1) 🔧 容器依赖检测/补齐（npm/uv/go/rust）"
+  echo "2) 📦 EasyClaw 升级/修复"
   echo "0) 返回上级"
 }
 
@@ -121,13 +141,39 @@ docker_menu_loop() {
     case "${choice}" in
       1) install_wizard ;;
       2) upgrade_wizard ;;
-      3) safe_rebuild_wizard ;;
-      4) easyclaw_only_upgrade_wizard ;;
-      5) deps_manage_wizard ;;
-      6) uninstall_wizard ;;
-      7) adopt_wizard ;;
-      8) persist_append_wizard ;;
-      9) info_wizard ;;
+      3) docker_rebuild_menu_loop ;;
+      4) docker_maintenance_menu_loop ;;
+      5) adopt_wizard ;;
+      6) info_wizard ;;
+      7) uninstall_wizard ;;
+      0) return ;;
+      *) log_error "无效选择" ;;
+    esac
+  done
+}
+
+docker_rebuild_menu_loop() {
+  local choice
+  while true; do
+    show_docker_rebuild_menu
+    choice=$(read_choice_default "请选择功能" "0")
+    case "${choice}" in
+      1) safe_rebuild_wizard ;;
+      2) persist_append_wizard ;;
+      0) return ;;
+      *) log_error "无效选择" ;;
+    esac
+  done
+}
+
+docker_maintenance_menu_loop() {
+  local choice
+  while true; do
+    show_docker_maintenance_menu
+    choice=$(read_choice_default "请选择功能" "0")
+    case "${choice}" in
+      1) deps_manage_wizard ;;
+      2) easyclaw_only_upgrade_wizard ;;
       0) return ;;
       *) log_error "无效选择" ;;
     esac
@@ -183,34 +229,194 @@ panel_menu_loop() {
 advanced_menu_loop() {
   local choice
   while true; do
-    clear_interactive_screen
-    echo
-    echo "==============================="
-    echo " 高级模式（兼容旧菜单）"
-    echo "==============================="
-    echo "1) 🚀 安装新实例"
-    echo "2) 🔄 升级已有实例"
-    echo "3) 🛠️ 调整或重建实例"
-    echo "4) 📦 管理 EasyClaw 工具"
-    echo "5) 🔧 检查或补齐运行环境"
-    echo "6) 🗑️ 卸载实例"
-    echo "7) 🔄 接管外部安装实例"
-    echo "8) 🧩 追加 Runtime 持久化"
-    echo "9) 🧪 原生 npm 安装"
-    echo "10) 📄 查看部署信息"
-    echo "0) 返回上级"
+    show_advanced_menu
     choice=$(read_choice_default "请选择功能" "0")
     case "${choice}" in
-      1) install_wizard ;;
-      2) upgrade_wizard ;;
-      3) safe_rebuild_wizard ;;
-      4) easyclaw_only_upgrade_wizard ;;
-      5) deps_manage_wizard ;;
-      6) uninstall_wizard ;;
-      7) adopt_wizard ;;
-      8) persist_append_wizard ;;
-      9) native_npm_wizard ;;
-      10) info_wizard ;;
+      1) advanced_wizard_direct_menu_loop ;;
+      2) advanced_config_exec_menu_loop ;;
+      3) advanced_dry_run_menu_loop ;;
+      0) return ;;
+      *) log_error "无效选择" ;;
+    esac
+  done
+}
+
+show_advanced_menu() {
+  clear_interactive_screen
+  echo
+  echo "==============================="
+  echo " 高级模式（开发者）"
+  echo "==============================="
+  echo "1) 🧭 Wizard 直达（install/upgrade/rebuild/...）"
+  echo "2) 📄 配置文件非交互执行"
+  echo "3) 🧪 Dry-run 预演"
+  echo "0) 返回上级"
+}
+
+show_advanced_wizard_selector_menu() {
+  clear_interactive_screen
+  echo
+  echo "==============================="
+  echo " Advanced · Wizard 直达"
+  echo "==============================="
+  echo "1) install"
+  echo "2) upgrade"
+  echo "3) rebuild"
+  echo "4) easyclaw"
+  echo "5) deps"
+  echo "6) uninstall"
+  echo "7) adopt"
+  echo "8) persist"
+  echo "9) native"
+  echo "10) native-upgrade"
+  echo "11) native-repair"
+  echo "12) native-info"
+  echo "13) native-uninstall"
+  echo "14) info"
+  echo "15) panel-install"
+  echo "16) panel-repair"
+  echo "17) panel-openclaw-install"
+  echo "18) panel-openclaw-adopt"
+  echo "19) panel-deps"
+  echo "20) panel-info"
+  echo "21) panel-uninstall"
+  echo "0) 返回上级"
+}
+
+advanced_wizard_key_from_choice() {
+  local choice="${1:-}"
+  case "${choice}" in
+    1) printf 'install\n' ;;
+    2) printf 'upgrade\n' ;;
+    3) printf 'rebuild\n' ;;
+    4) printf 'easyclaw\n' ;;
+    5) printf 'deps\n' ;;
+    6) printf 'uninstall\n' ;;
+    7) printf 'adopt\n' ;;
+    8) printf 'persist\n' ;;
+    9) printf 'native\n' ;;
+    10) printf 'native-upgrade\n' ;;
+    11) printf 'native-repair\n' ;;
+    12) printf 'native-info\n' ;;
+    13) printf 'native-uninstall\n' ;;
+    14) printf 'info\n' ;;
+    15) printf 'panel-install\n' ;;
+    16) printf 'panel-repair\n' ;;
+    17) printf 'panel-openclaw-install\n' ;;
+    18) printf 'panel-openclaw-adopt\n' ;;
+    19) printf 'panel-deps\n' ;;
+    20) printf 'panel-info\n' ;;
+    21) printf 'panel-uninstall\n' ;;
+    0) printf '__BACK__\n' ;;
+    *) printf '\n' ;;
+  esac
+}
+
+advanced_choose_wizard_key() {
+  local choice wizard_key
+  while true; do
+    show_advanced_wizard_selector_menu
+    choice=$(read_choice_default "请选择向导" "0")
+    wizard_key="$(advanced_wizard_key_from_choice "${choice}")"
+    if [[ "${wizard_key}" == "__BACK__" ]]; then
+      printf '\n'
+      return 0
+    fi
+    if [[ -n "${wizard_key}" ]]; then
+      printf '%s\n' "${wizard_key}"
+      return 0
+    fi
+    log_error "无效选择"
+  done
+}
+
+run_selected_wizard_with_context() {
+  local wizard_key="$1"
+  local config_path="${2:-}"
+  local force_dry_run="${3:-0}"
+  local prev_wizard="${SELECTED_WIZARD}"
+  local prev_config="${CONFIG_FILE}"
+  local prev_dry_run="${DRY_RUN}"
+
+  SELECTED_WIZARD="${wizard_key}"
+  CONFIG_FILE="${config_path}"
+  if [[ "${force_dry_run}" == "1" ]]; then
+    DRY_RUN=1
+  fi
+
+  run_selected_wizard
+
+  SELECTED_WIZARD="${prev_wizard}"
+  CONFIG_FILE="${prev_config}"
+  DRY_RUN="${prev_dry_run}"
+}
+
+advanced_wizard_direct_menu_loop() {
+  local wizard_key
+  wizard_key="$(advanced_choose_wizard_key)"
+  if [[ -z "${wizard_key}" ]]; then
+    return
+  fi
+  run_selected_wizard_with_context "${wizard_key}" "" "0"
+}
+
+advanced_config_exec_menu_loop() {
+  local wizard_key config_path
+  wizard_key="$(advanced_choose_wizard_key)"
+  if [[ -z "${wizard_key}" ]]; then
+    return
+  fi
+
+  config_path=$(read_required "请输入配置文件路径")
+  config_path=$(trim_surrounding_spaces "${config_path}")
+  if [[ ! -f "${config_path}" ]]; then
+    log_error "配置文件不存在: ${config_path}"
+    press_enter_to_continue
+    return
+  fi
+
+  run_selected_wizard_with_context "${wizard_key}" "${config_path}" "0"
+}
+
+show_advanced_dry_run_menu() {
+  clear_interactive_screen
+  echo
+  echo "==============================="
+  echo " Advanced · Dry-run 预演"
+  echo "==============================="
+  echo "1) 🧪 预演指定 Wizard（交互）"
+  echo "2) 📄 预演指定 Wizard（配置文件）"
+  echo "0) 返回上级"
+}
+
+advanced_dry_run_menu_loop() {
+  local choice
+  while true; do
+    show_advanced_dry_run_menu
+    choice=$(read_choice_default "请选择功能" "0")
+    case "${choice}" in
+      1)
+        local wizard_key
+        wizard_key="$(advanced_choose_wizard_key)"
+        if [[ -n "${wizard_key}" ]]; then
+          run_selected_wizard_with_context "${wizard_key}" "" "1"
+        fi
+        ;;
+      2)
+        local wizard_key config_path
+        wizard_key="$(advanced_choose_wizard_key)"
+        if [[ -z "${wizard_key}" ]]; then
+          continue
+        fi
+        config_path=$(read_required "请输入配置文件路径")
+        config_path=$(trim_surrounding_spaces "${config_path}")
+        if [[ ! -f "${config_path}" ]]; then
+          log_error "配置文件不存在: ${config_path}"
+          press_enter_to_continue
+          continue
+        fi
+        run_selected_wizard_with_context "${wizard_key}" "${config_path}" "1"
+        ;;
       0) return ;;
       *) log_error "无效选择" ;;
     esac

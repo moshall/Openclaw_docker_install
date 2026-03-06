@@ -116,6 +116,30 @@ assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功�
 assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
 assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
 
+# 1a) docker menu should use grouped structure
+docker_menu_output=$(printf '2\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${docker_menu_output}" "新安装 Docker 实例（推荐）"
+assert_contains "${docker_menu_output}" "运行环境维护"
+assert_contains "${docker_menu_output}" "查看 Docker 部署信息"
+assert_not_contains "${docker_menu_output}" "管理 EasyClaw 工具"
+
+docker_maintenance_menu_output=$(printf '2\n4\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${docker_maintenance_menu_output}" "Docker 运行环境维护"
+assert_contains "${docker_maintenance_menu_output}" "容器依赖检测/补齐（npm/uv/go/rust）"
+assert_contains "${docker_maintenance_menu_output}" "EasyClaw 升级/修复"
+
+docker_rebuild_menu_output=$(printf '2\n3\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${docker_rebuild_menu_output}" "Docker 调整配置并重建"
+assert_contains "${docker_rebuild_menu_output}" "修改端口/数据目录后重建"
+assert_contains "${docker_rebuild_menu_output}" "追加 Runtime 持久化"
+
+# 1a2) advanced menu should expose developer grouped entries
+advanced_menu_output=$(printf '9\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${advanced_menu_output}" "高级模式（开发者）"
+assert_contains "${advanced_menu_output}" "Wizard 直达（install/upgrade/rebuild/...）"
+assert_contains "${advanced_menu_output}" "配置文件非交互执行"
+assert_contains "${advanced_menu_output}" "Dry-run 预演"
+
 # 1b) on non-linux host, dry-run shell menu should allow 1panel menu preview
 panel_menu_preview_output=$(printf '3\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_TEST_HOST_PLATFORM=darwin bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${panel_menu_preview_output}" "已启用 1Panel 菜单预演模式"
@@ -279,7 +303,7 @@ assert_contains "${wizard_invalid_output}" "无效的 wizard"
 install_input=$'2\n1\n1\n2\n1\n2\nopenclaw_demo\n3\n/opt/1panel/apps/openclaw_demo\n1\n2\n2\n2\n4\n2\n4113\n18789\n\n5\n1\n1\n1\n1\n2\n2\n\n6\n1\nc\ny\n0\n'
 install_output=$(printf "%s" "${install_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
-assert_contains "${install_output}" "1) 🚀 安装新实例"
+assert_contains "${install_output}" "1) 🚀 新安装 Docker 实例（推荐）"
 assert_contains "${install_output}" "=== 🚀 安装新实例 ==="
 assert_contains "${install_output}" "1) 📦 版本镜像选择: 未选择"
 assert_contains "${install_output}" "2) 🐳 容器名: 未选择"
@@ -311,7 +335,7 @@ assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n\n4\n1\n1\n1\n1\n1\n2\n\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
-assert_contains "${upgrade_output}" "2) 🔄 升级已有实例"
+assert_contains "${upgrade_output}" "2) 🔄 升级 Docker 实例"
 assert_contains "${upgrade_output}" "=== 🔄 升级已有实例：openclaw_demo ==="
 assert_contains "${upgrade_output}" "=== 升级前环境检测 ==="
 assert_contains "${upgrade_output}" "1) 📦 目标版本:"
@@ -355,21 +379,21 @@ assert_contains "${upgrade_output}" "-p 4231:4231"
 assert_not_contains "${upgrade_output}" "software/easy_cli"
 
 # 3) uninstall wizard: safe mode keeps data directory
-uninstall_safe_input=$'2\n6\nopenclaw_demo\n1\n\nopenclaw_demo\n0\n'
+uninstall_safe_input=$'2\n7\nopenclaw_demo\n1\n\nopenclaw_demo\n0\n'
 uninstall_safe_output=$(printf "%s" "${uninstall_safe_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${uninstall_safe_output}" "docker rm -f openclaw_demo"
 assert_not_contains "${uninstall_safe_output}" "rm -rf /opt/1panel/apps/openclaw_demo"
 
 # 4) uninstall wizard: full mode deletes data directory
-uninstall_full_input=$'2\n6\nopenclaw_demo\n2\n\nopenclaw_demo\n0\n'
+uninstall_full_input=$'2\n7\nopenclaw_demo\n2\n\nopenclaw_demo\n0\n'
 uninstall_full_output=$(printf "%s" "${uninstall_full_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${uninstall_full_output}" "docker rm -f openclaw_demo"
 assert_contains "${uninstall_full_output}" "rm -rf /opt/1panel/apps/openclaw_demo"
 
 # 5) easyclaw-only upgrade
-easy_cli_only_input=$'2\n4\nopenclaw_demo\n\ny\n0\n'
+easy_cli_only_input=$'2\n4\n2\nopenclaw_demo\n\ny\n0\n'
 easy_cli_only_output=$(printf "%s" "${easy_cli_only_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${easy_cli_only_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw fetch --all --prune"
@@ -385,7 +409,7 @@ assert_contains "${upgrade_abort_output}" "已取消"
 assert_not_contains "${upgrade_abort_output}" "docker pull"
 
 # 7) standalone dependency check/install menu (default npm/uv, go optional)
-deps_menu_input=$'2\n5\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
+deps_menu_input=$'2\n4\n1\nopenclaw_demo\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n2\n2\n\ny\n0\n'
 deps_menu_output=$(printf "%s" "${deps_menu_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${deps_menu_output}" "开始检测容器依赖: npm uv"
@@ -420,9 +444,9 @@ assert_contains "${install_ext_persist_output}" "/runtime/root-npm-cache:/root/.
 assert_contains "${install_ext_persist_output}" "/runtime/root-go-pkg-mod:/root/go/pkg/mod"
 
 # 12) safe rebuild should run migration then recreate container
-rebuild_input=$'2\n3\nopenclaw_rebuild\nc\ny\n0\n'
+rebuild_input=$'2\n3\n1\nopenclaw_rebuild\nc\ny\n0\n'
 rebuild_output=$(printf "%s" "${rebuild_input}" | OPENCLAWCTL_TEST_CURRENT_IMAGE=ghcr.io/1186258278/openclaw-zh:latest bash "${SCRIPT_PATH}" --dry-run)
-assert_contains "${rebuild_output}" "3) 🛠️ 调整或重建实例"
+assert_contains "${rebuild_output}" "3) 🛠️ 调整配置并重建"
 assert_contains "${rebuild_output}" "=== 🛠️ 调整或重建实例：openclaw_rebuild ==="
 assert_contains "${rebuild_output}" "=== 升级前环境检测 ==="
 assert_contains "${rebuild_output}" "ghcr.io/1186258278/openclaw-zh:latest"
