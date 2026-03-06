@@ -367,17 +367,21 @@ list_native_npm_versions_for_selection() {
     return 1
   fi
 
-  local wants_prerelease="0"
+  local filter_mode="stable"
   if [[ "${channel_choice}" == "2" ]]; then
-    wants_prerelease="1"
+    filter_mode="prerelease"
+  elif [[ "${channel_choice}" == "3" ]]; then
+    filter_mode="all"
   fi
   if [[ "${source_choice}" != "1" && "${source_choice}" != "2" ]]; then
-    wants_prerelease="0"
+    filter_mode="stable"
   fi
 
   local item
   for item in "${all_versions[@]}"; do
-    if [[ "${wants_prerelease}" == "1" ]]; then
+    if [[ "${filter_mode}" == "all" ]]; then
+      filtered_versions+=("${item}")
+    elif [[ "${filter_mode}" == "prerelease" ]]; then
       if native_is_prerelease_version "${item}"; then
         filtered_versions+=("${item}")
       fi
@@ -412,17 +416,20 @@ prompt_native_npm_version_choice() {
   local source_choice="$2"
   local channel_choice="$3"
   local default_tag="$4"
+  local direct_select_only="${5:-0}"
 
-  echo "版本策略:" >&2
-  echo "  1) 通道默认（推荐）" >&2
-  echo "  2) 指定版本（列表选择）" >&2
+  if [[ "${direct_select_only}" != "1" ]]; then
+    echo "版本策略:" >&2
+    echo "  1) 通道默认（推荐）" >&2
+    echo "  2) 指定版本（列表选择）" >&2
 
-  local mode_choice
-  mode_choice=$(read_choice_default "请选择" "1")
-  mode_choice=$(printf '%s' "${mode_choice}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
-  if [[ "${mode_choice}" != "2" ]]; then
-    printf '%s\n' ""
-    return
+    local mode_choice
+    mode_choice=$(read_choice_default "请选择" "1")
+    mode_choice=$(printf '%s' "${mode_choice}" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    if [[ "${mode_choice}" != "2" ]]; then
+      printf '%s\n' ""
+      return
+    fi
   fi
 
   local -a versions=()

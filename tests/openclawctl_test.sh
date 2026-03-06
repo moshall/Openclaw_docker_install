@@ -535,11 +535,11 @@ assert_contains "${native_hostdeps_output}" "deb.nodesource.com/setup_22.x"
 assert_contains "${native_hostdeps_output}" "build-essential"
 assert_contains "${native_hostdeps_output}" "python3-pip"
 
-native_interactive_version_output=$(printf '2\n1\n2\n2\nopenclaw_native_pick\n\n\n\n\ny\n' | OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0,1.2.0' bash "${SCRIPT_PATH}" --dry-run --wizard native 2>&1)
-assert_contains "${native_interactive_version_output}" "版本策略: 指定版本（列表选择）"
+native_interactive_version_output=$(printf '2\n3\n2\nopenclaw_native_pick\n\n\n\n\ny\n' | OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0,1.2.0' bash "${SCRIPT_PATH}" --dry-run --wizard native 2>&1)
+assert_contains "${native_interactive_version_output}" "  3) 指定版本（列表选择）"
 assert_contains "${native_interactive_version_output}" "可选版本（最近）"
 assert_contains "${native_interactive_version_output}" "@qingchencloud/openclaw-zh@1.1.0"
-assert_not_contains "${native_interactive_version_output}" "可选指定 tag（留空按通道）"
+assert_not_contains "${native_interactive_version_output}" "版本策略:"
 
 # 19b) 1panel wizard should support linux dry-run install and reject non-linux
 panel_install_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-install <<< $'y\n')

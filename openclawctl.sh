@@ -2929,15 +2929,21 @@ native_npm_wizard() {
   if [[ "${source_choice}" == "1" ]]; then
     echo "  1) stable(latest)"
     echo "  2) beta"
+    echo "  3) 指定版本（列表选择）"
   else
     echo "  1) stable(latest)"
     echo "  2) nightly"
+    echo "  3) 指定版本（列表选择）"
   fi
   channel_choice=$(read_choice_default "请选择" "${channel_choice}")
   local package_name default_tag
   package_name=$(native_package_for_source_choice "${source_choice}")
-  default_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "")
-  explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}")
+  default_tag=$(native_tag_for_source_choice "${source_choice}" "1" "")
+  if [[ "${channel_choice}" == "3" ]]; then
+    explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}" "1")
+  else
+    explicit_tag=""
+  fi
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
   name=$(read_container_name "应用名（仅用于配置记录）")
   data_dir=$(read_with_default "数据目录" "${data_dir}")
@@ -2952,11 +2958,6 @@ native_npm_wizard() {
   resolved_version_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "${explicit_tag}")
   echo "来源: $(source_choice_label "${source_choice}")"
   echo "通道: $(channel_choice_label "${channel_choice}")"
-  if [[ -n "${explicit_tag}" ]]; then
-    echo "版本策略: 指定版本（列表选择）"
-  else
-    echo "版本策略: 通道默认（推荐）"
-  fi
   echo "版本号: ${resolved_version_tag}"
   echo "应用名: ${name}"
   echo "数据目录: ${data_dir}"
@@ -3007,15 +3008,21 @@ native_upgrade_wizard() {
   if [[ "${source_choice}" == "1" ]]; then
     echo "  1) stable(latest)"
     echo "  2) beta"
+    echo "  3) 指定版本（列表选择）"
   else
     echo "  1) stable(latest)"
     echo "  2) nightly"
+    echo "  3) 指定版本（列表选择）"
   fi
   channel_choice=$(read_choice_default "请选择" "${channel_choice}")
   local package_name default_tag
   package_name=$(native_package_for_source_choice "${source_choice}")
-  default_tag=$(native_tag_for_source_choice "${source_choice}" "${channel_choice}" "")
-  explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}")
+  default_tag=$(native_tag_for_source_choice "${source_choice}" "1" "")
+  if [[ "${channel_choice}" == "3" ]]; then
+    explicit_tag=$(prompt_native_npm_version_choice "${package_name}" "${source_choice}" "${channel_choice}" "${default_tag}" "1")
+  else
+    explicit_tag=""
+  fi
   explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
   data_dir=$(read_with_default "数据目录" "${data_dir}")
   native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
@@ -3047,11 +3054,6 @@ native_upgrade_wizard() {
   fi
   echo "来源: $(source_choice_label "${source_choice}")"
   echo "通道: $(channel_choice_label "${channel_choice}")"
-  if [[ -n "${explicit_tag}" ]]; then
-    echo "版本策略: 指定版本（列表选择）"
-  else
-    echo "版本策略: 通道默认（推荐）"
-  fi
   echo "版本号: ${resolved_version_tag}"
   echo "应用名: ${name}"
   echo "数据目录: ${data_dir}"
