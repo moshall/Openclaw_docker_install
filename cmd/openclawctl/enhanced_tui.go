@@ -34,16 +34,33 @@ func runEnhancedSubmission(dryRun bool) (enhancedSubmission, error) {
 }
 
 func buildEnhancedActions() []tui.Action {
-	options := actionOptions()
-	out := make([]tui.Action, 0, len(options))
-	for _, option := range options {
-		out = append(out, tui.Action{
-			Key:         option.Key,
-			Label:       option.Label,
-			Description: option.Description,
-		})
+	return []tui.Action{
+		{Key: "native", Label: "1.1 Native 新安装", Description: "Native 实体机安装与管理（Mac/Linux）"},
+		{Key: "native-upgrade", Label: "1.2 Native 升级/重装", Description: "保留数据升级或重装"},
+		{Key: "native-repair", Label: "1.3 Native 运行环境修复", Description: "Node/npm、构建链、swap 修复"},
+		{Key: "native-info", Label: "1.4 查看 Native 部署信息", Description: "读取 Native 报告与目录信息"},
+		{Key: "native-uninstall", Label: "1.5 卸载 Native 实例", Description: "卸载 npm 包，可选删除数据"},
+
+		{Key: "install", Label: "2.1 Docker 新安装（推荐）", Description: "镜像/端口/持久化/可选软件/Skills"},
+		{Key: "upgrade", Label: "2.2 Docker 升级实例", Description: "安全升级并保留数据"},
+		{Key: "rebuild", Label: "2.3 调整配置并重建", Description: "修改端口/目录/挂载后重建"},
+		{Key: "persist", Label: "2.3.1 追加 Runtime 持久化", Description: "对已有实例执行持久化重建"},
+		{Key: "deps", Label: "2.4 容器运行环境维护", Description: "依赖检测/补齐（npm/uv/go/rust）"},
+		{Key: "easyclaw", Label: "2.4.1 EasyClaw 升级/修复", Description: "检查并升级 EasyClaw"},
+		{Key: "adopt", Label: "2.5 接管已有 Docker 实例", Description: "读取容器并生成可管理配置"},
+		{Key: "info", Label: "2.6 查看 Docker 部署信息", Description: "读取 deployment-info.txt"},
+		{Key: "uninstall", Label: "2.7 卸载 Docker 实例", Description: "安全卸载或完全删除实例"},
+
+		{Key: "panel-install", Label: "3.1 安装 1Panel", Description: "环境检查 + 官方脚本安装"},
+		{Key: "panel-repair", Label: "3.2 升级/修复 1Panel", Description: "1Panel 自身升级与异常修复"},
+		{Key: "panel-openclaw-install", Label: "3.3 1Panel 安装 OpenClaw", Description: "复用 Docker 安装流程"},
+		{Key: "panel-openclaw-adopt", Label: "3.4 接管 1Panel 实例", Description: "接管已有 1Panel/OpenClaw 容器"},
+		{Key: "panel-deps", Label: "3.5 1Panel 环境依赖修复", Description: "Docker/网络/端口检查修复"},
+		{Key: "panel-info", Label: "3.6 查看 1Panel 部署信息", Description: "查看 1Panel + OpenClaw 信息"},
+		{Key: "panel-uninstall", Label: "3.7 卸载 1Panel OpenClaw", Description: "卸载 1Panel 下 OpenClaw 实例"},
+
+		{Key: "quit", Label: "0. 退出", Description: "不执行任何变更并退出"},
 	}
-	return out
 }
 
 func buildEnhancedForms() map[string]tui.Form {
@@ -183,6 +200,10 @@ func buildEnhancedForms() map[string]tui.Form {
 func writeConfigForEnhancedAction(dir string, submission enhancedSubmission) (string, error) {
 	switch submission.Action {
 	case "", "quit", "info":
+		return "", nil
+	case "native-upgrade", "native-repair", "native-info", "native-uninstall":
+		return "", nil
+	case "panel-install", "panel-repair", "panel-openclaw-install", "panel-openclaw-adopt", "panel-deps", "panel-info", "panel-uninstall":
 		return "", nil
 	case "install":
 		cfg := installConfig{

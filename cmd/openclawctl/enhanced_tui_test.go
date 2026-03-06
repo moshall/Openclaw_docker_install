@@ -17,6 +17,27 @@ func TestBuildEnhancedFormsCoverCoreActions(t *testing.T) {
 	}
 }
 
+func TestBuildEnhancedActionsExposeTreeFlows(t *testing.T) {
+	t.Parallel()
+
+	actions := buildEnhancedActions()
+	if len(actions) < 20 {
+		t.Fatalf("expected enhanced actions to include tree flows, got %d", len(actions))
+	}
+	found := map[string]bool{}
+	for _, action := range actions {
+		found[action.Key] = true
+	}
+	for _, key := range []string{
+		"native-upgrade", "native-repair", "native-info", "native-uninstall",
+		"panel-install", "panel-repair", "panel-openclaw-install", "panel-openclaw-adopt", "panel-deps", "panel-info", "panel-uninstall",
+	} {
+		if !found[key] {
+			t.Fatalf("expected enhanced actions to include %q", key)
+		}
+	}
+}
+
 func TestWriteConfigForEnhancedActionInstall(t *testing.T) {
 	t.Parallel()
 
@@ -83,3 +104,22 @@ func TestWriteConfigForEnhancedActionInfoSkipsConfigFile(t *testing.T) {
 	}
 }
 
+func TestWriteConfigForEnhancedActionExtendedWizardsSkipConfigFile(t *testing.T) {
+	t.Parallel()
+
+	for _, action := range []string{
+		"native-upgrade", "native-repair", "native-info", "native-uninstall",
+		"panel-install", "panel-repair", "panel-openclaw-install", "panel-openclaw-adopt", "panel-deps", "panel-info", "panel-uninstall",
+	} {
+		cfgPath, err := writeConfigForEnhancedAction(t.TempDir(), enhancedSubmission{
+			Action: action,
+			Values: map[string]string{},
+		})
+		if err != nil {
+			t.Fatalf("expected no error for %s, got: %v", action, err)
+		}
+		if cfgPath != "" {
+			t.Fatalf("expected empty config path for %s, got %q", action, cfgPath)
+		}
+	}
+}
