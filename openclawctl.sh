@@ -2473,6 +2473,8 @@ execute_native_install_plan() {
   local native_prefix="$6"
   local software_set="${7:-}"
   local skill_set="${8:-}"
+  local native_action="${9:-native-install}"
+  local native_title="${10:-原生 npm 安装结果}"
 
   local package_name version_tag package_ref
   package_name=$(native_package_for_source_choice "${source_choice}")
@@ -2480,7 +2482,7 @@ execute_native_install_plan() {
   package_ref="${package_name}"
   [[ -n "${version_tag}" ]] && package_ref="${package_name}@${version_tag}"
 
-  if ! ensure_native_host_dependencies "native-install"; then
+  if ! ensure_native_host_dependencies "${native_action}"; then
     log_error "宿主机依赖检查未通过，原生 npm 安装已终止"
     return 1
   fi
@@ -2504,9 +2506,9 @@ execute_native_install_plan() {
   save_skill_profile "${data_dir}" "${skill_set}"
 
   local native_status="success"
-  write_last_report "native-install" "${native_status}" "${app_name}" "${data_dir}" "${package_ref}" "" "" "" "" ""
+  write_last_report "${native_action}" "${native_status}" "${app_name}" "${data_dir}" "${package_ref}" "" "" "" "" ""
   printf '\n===============================\n'
-  echo "原生 npm 安装结果"
+  echo "${native_title}"
   echo "==============================="
   echo "应用名：${app_name}"
   echo "包名：${package_ref}"
@@ -2516,6 +2518,101 @@ execute_native_install_plan() {
   echo "Skills：$(skill_set_summary "${skill_set}")"
   echo "启动示例：PATH=${native_prefix}/bin:\$PATH OPENCLAW_HOME=${data_dir} openclaw gateway run"
   echo "==============================="
+}
+
+native_report_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/last_report.json"
+}
+
+show_native_report() {
+  local app_name="$1"
+  local data_dir="$2"
+  local report_file
+  report_file=$(native_report_path "${data_dir}")
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "Native 应用：${app_name}"
+    echo "Native 数据目录：${data_dir}"
+    echo "Native 报告路径：${report_file}"
+    return 0
+  fi
+  if [[ ! -f "${report_file}" ]]; then
+    log_error "未找到 Native 部署报告: ${report_file}"
+    return 1
+  fi
+
+  printf '\n=== Native 部署信息 ===\n'
+  echo "应用名：${app_name}"
+  echo "数据目录：${data_dir}"
+  cat "${report_file}"
+}
+
+normalize_native_repair_mode() {
+  local mode_raw="${1:-all}"
+  mode_raw=$(echo "${mode_raw}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "${mode_raw}" in
+    1|node|node-npm|nodejs|npm) echo "node" ;;
+    2|build|toolchain|python|cmake) echo "build" ;;
+    3|swap|memory|mem) echo "swap" ;;
+    4|all|"") echo "all" ;;
+    *)
+      echo "all"
+      ;;
+  esac
+}
+
+execute_native_repair_plan() {
+  local mode_raw="${1:-all}"
+  local mode
+  mode=$(normalize_native_repair_mode "${mode_raw}")
+
+  printf '\n=== 🔧 修复 Native 运行环境 ===\n'
+  local failed=0
+  case "${mode}" in
+    node)
+      hostdeps_repair_node_npm || failed=1
+      ;;
+    build)
+      hostdeps_repair_build_toolchain || failed=1
+      ;;
+    swap)
+      hostdeps_repair_swap || failed=1
+      ;;
+    all)
+      ensure_native_host_dependencies "native-repair" || failed=1
+      ;;
+  esac
+
+  local status="success"
+  if [[ "${failed}" -ne 0 ]]; then
+    status="failed"
+    log_error "Native 运行环境修复未完全通过，请按提示处理后重试"
+  else
+    log_info "Native 运行环境修复完成"
+  fi
+  write_last_report "native-repair" "${status}" "openclaw_native" "" "" "" "" "" "" ""
+  [[ "${failed}" -eq 0 ]]
+}
+
+execute_native_uninstall_plan() {
+  local app_name="$1"
+  local data_dir="$2"
+  local native_prefix="$3"
+  local mode="${4:-1}"
+
+  printf '\n=== 🗑️ 卸载 Native 实例 ===\n'
+  echo "应用名：${app_name}"
+  echo "数据目录：${data_dir}"
+  echo "安装前缀：${native_prefix}"
+
+  if ! run_optional_step "卸载 Native npm 包" run_cmd npm uninstall -g --prefix "${native_prefix}" openclaw @qingchencloud/openclaw-zh; then
+    log_error "Native npm 包卸载存在告警（可能未安装），已继续清理流程"
+  fi
+  if [[ "${mode}" == "2" ]]; then
+    run_cmd rm -rf "${data_dir}"
+  fi
+  write_last_report "native-uninstall" "success" "${app_name}" "${data_dir}" "" "" "" "" "" ""
 }
 
 run_native_from_config_file() {
@@ -2537,7 +2634,83 @@ run_native_from_config_file() {
   local skill_set
   skill_set=$(normalize_skill_set "${SKILL_SET_CFG}")
 
-  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}"
+  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}" "native-install" "原生 npm 安装结果"
+}
+
+run_native_upgrade_from_config_file() {
+  SOURCE_CHOICE_CFG="2"
+  CHANNEL_CHOICE_CFG="1"
+  OFFICIAL_TAG_CFG=""
+  MODE_CFG="1"
+  NAME_CFG="openclaw_native"
+  DATA_DIR_CFG=""
+  NATIVE_PREFIX_CFG=""
+  SOFTWARE_SET_CFG=""
+  SKILL_SET_CFG=""
+  load_simple_config_file "${CONFIG_FILE}"
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local native_prefix="${NATIVE_PREFIX_CFG:-${data_dir}/native}"
+  local software_set
+  software_set=$(normalize_software_set "${SOFTWARE_SET_CFG}")
+  if [[ -z "${software_set}" ]]; then
+    software_set=$(load_software_profile "${data_dir}")
+    software_set=$(normalize_software_set "${software_set}")
+  fi
+  local skill_set
+  skill_set=$(normalize_skill_set "${SKILL_SET_CFG}")
+  if [[ -z "${skill_set}" ]]; then
+    skill_set=$(load_skill_profile "${data_dir}")
+    skill_set=$(normalize_skill_set "${skill_set}")
+  fi
+
+  local mode
+  mode=$(echo "${MODE_CFG}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local action="native-upgrade"
+  local title="原生 npm 升级结果"
+  local remove_data="0"
+  case "${mode}" in
+    2|reinstall|reinstall-keep)
+      action="native-reinstall"
+      title="原生 npm 重装结果"
+      ;;
+    3|reinstall-reset|reset)
+      action="native-reinstall"
+      title="原生 npm 重装结果"
+      remove_data="1"
+      ;;
+  esac
+  if [[ "${remove_data}" == "1" ]]; then
+    run_cmd rm -rf "${data_dir}"
+  fi
+
+  execute_native_install_plan "${SOURCE_CHOICE_CFG}" "${CHANNEL_CHOICE_CFG}" "${OFFICIAL_TAG_CFG}" "${NAME_CFG}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}" "${action}" "${title}"
+}
+
+run_native_repair_from_config_file() {
+  MODE_CFG="all"
+  load_simple_config_file "${CONFIG_FILE}"
+  execute_native_repair_plan "${MODE_CFG}"
+}
+
+run_native_info_from_config_file() {
+  NAME_CFG="openclaw_native"
+  DATA_DIR_CFG=""
+  load_simple_config_file "${CONFIG_FILE}"
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  show_native_report "${NAME_CFG}" "${data_dir}"
+}
+
+run_native_uninstall_from_config_file() {
+  NAME_CFG="openclaw_native"
+  DATA_DIR_CFG=""
+  NATIVE_PREFIX_CFG=""
+  MODE_CFG="1"
+  load_simple_config_file "${CONFIG_FILE}"
+
+  local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+  local native_prefix="${NATIVE_PREFIX_CFG:-${data_dir}/native}"
+  execute_native_uninstall_plan "${NAME_CFG}" "${data_dir}" "${native_prefix}" "${MODE_CFG}"
 }
 
 run_1panel_quickstart_script() {
@@ -2611,6 +2784,115 @@ panel_repair_wizard() {
   run_1panel_quickstart_script "repair"
 }
 
+panel_openclaw_install_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel OpenClaw 安装仅支持 Linux 主机"
+    return 1
+  fi
+  OPENCLAWCTL_DATA_ROOT="/opt/1panel/apps" install_wizard
+}
+
+panel_openclaw_adopt_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel OpenClaw 接管仅支持 Linux 主机"
+    return 1
+  fi
+  OPENCLAWCTL_DATA_ROOT="/opt/1panel/apps" adopt_wizard
+}
+
+repair_1panel_environment_dependencies() {
+  local host_port="$1"
+  local failed=0
+  local auto_fix="${OPENCLAWCTL_AUTO_FIX_HOST_DEPS:-1}"
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "[panel] 缺少 docker 命令"
+    if [[ "${auto_fix}" == "1" ]]; then
+      hostdeps_install_docker_via_package_manager || failed=1
+    else
+      failed=1
+    fi
+  fi
+
+  run_cmd docker info
+  if [[ "${DRY_RUN}" -eq 0 ]] && command -v docker >/dev/null 2>&1; then
+    if ! docker info >/dev/null 2>&1; then
+      log_error "[panel] Docker Daemon 未就绪，尝试拉起服务"
+      if command -v systemctl >/dev/null 2>&1; then
+        run_cmd systemctl enable --now docker || true
+      elif command -v service >/dev/null 2>&1; then
+        run_cmd service docker start || true
+      fi
+      if ! docker info >/dev/null 2>&1; then
+        log_error "[panel] Docker Daemon 仍不可用"
+        failed=1
+      fi
+    fi
+  fi
+
+  log_info "[panel] 端口检查: ${host_port}"
+  if ! is_host_port_available "${host_port}"; then
+    log_error "[panel] 宿主机端口已被占用: ${host_port}"
+    failed=1
+  else
+    log_info "[panel] 宿主机端口可用: ${host_port}"
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    run_cmd curl -fsSLI "${OPENCLAWCTL_1PANEL_SCRIPT_URL:-https://resource.fit2cloud.com/1panel/package/quick_start.sh}"
+  else
+    log_info "[panel] 未检测到 curl，跳过外网连通性探测"
+  fi
+
+  [[ "${failed}" -eq 0 ]]
+}
+
+run_panel_deps_from_config_file() {
+  HOST_PORT_CFG="${DEFAULT_HOST_PORT}"
+  load_simple_config_file "${CONFIG_FILE}"
+  repair_1panel_environment_dependencies "${HOST_PORT_CFG}"
+}
+
+panel_deps_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel 环境依赖修复仅支持 Linux 主机"
+    return 1
+  fi
+
+  printf '\n=== 🧰 1Panel 环境依赖修复 ===\n'
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_panel_deps_from_config_file
+    return
+  fi
+
+  local host_port
+  host_port=$(read_with_default "用于检查的 OpenClaw 宿主机端口" "${DEFAULT_HOST_PORT}")
+  printf '确认执行 1Panel 环境依赖修复? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return 0
+  fi
+  repair_1panel_environment_dependencies "${host_port}"
+}
+
+panel_info_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel 部署信息查看仅支持 Linux 主机"
+    return 1
+  fi
+  OPENCLAWCTL_DATA_ROOT="/opt/1panel/apps" info_wizard
+}
+
+panel_uninstall_wizard() {
+  if [[ "$(host_platform)" != "linux" ]]; then
+    log_error "1Panel OpenClaw 卸载仅支持 Linux 主机"
+    return 1
+  fi
+  OPENCLAWCTL_DATA_ROOT="/opt/1panel/apps" uninstall_wizard
+}
+
 native_npm_wizard() {
   if [[ -n "${CONFIG_FILE}" ]]; then
     run_native_from_config_file
@@ -2670,6 +2952,172 @@ native_npm_wizard() {
   fi
 
   execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}"
+}
+
+native_upgrade_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_native_upgrade_from_config_file
+    return
+  fi
+
+  printf '\n=== 🔄 升级/重装 Native 实例 ===\n'
+  echo "模式:"
+  echo "  1) 保留数据升级"
+  echo "  2) 全新重装（可选删除数据）"
+  local mode_choice
+  mode_choice=$(read_choice_default "请选择" "1")
+
+  local source_choice channel_choice explicit_tag name data_dir native_prefix
+  source_choice="2"
+  channel_choice="1"
+  explicit_tag=""
+  name="openclaw_native"
+  name=$(read_with_default "应用名（用于配置记录）" "${name}")
+  name=$(trim_surrounding_spaces "${name}")
+  [[ -n "${name}" ]] || name="openclaw_native"
+  data_dir="$(default_data_dir_for_name "${name}")"
+  native_prefix="${data_dir}/native"
+
+  echo "版本来源:"
+  echo "  1) 官方 npm(openclaw)"
+  echo "  2) 中文版 npm(@qingchencloud/openclaw-zh)"
+  source_choice=$(read_choice_default "请选择" "${source_choice}")
+
+  echo "版本通道:"
+  if [[ "${source_choice}" == "1" ]]; then
+    echo "  1) stable(latest)"
+    echo "  2) beta"
+  else
+    echo "  1) stable(latest)"
+    echo "  2) nightly"
+  fi
+  channel_choice=$(read_choice_default "请选择" "${channel_choice}")
+  explicit_tag=$(read_with_default "可选指定 tag（留空按通道）" "${explicit_tag}")
+  explicit_tag=$(trim_surrounding_spaces "${explicit_tag}")
+  data_dir=$(read_with_default "数据目录" "${data_dir}")
+  native_prefix=$(read_with_default "npm 安装前缀目录" "${native_prefix}")
+
+  local software_set skill_set
+  software_set=$(load_software_profile "${data_dir}")
+  skill_set=$(load_skill_profile "${data_dir}")
+  software_set=$(read_with_default "可选软件（默认读取已保存档案）" "${software_set}")
+  skill_set=$(read_with_default "预装 Skills（默认读取已保存档案）" "${skill_set}")
+  software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(normalize_skill_set "${skill_set}")
+
+  local reinstall_data_mode="1"
+  if [[ "${mode_choice}" == "2" ]]; then
+    echo "重装数据策略:"
+    echo "  1) 保留数据目录（重装程序）"
+    echo "  2) 删除数据目录后重装"
+    reinstall_data_mode=$(read_choice_default "请选择" "1")
+  fi
+
+  printf '\n--- 执行清单（确认前） ---\n'
+  if [[ "${mode_choice}" == "2" ]]; then
+    echo "模式: 全新重装"
+    echo "重装数据策略: $(choice_to_yes_no "${reinstall_data_mode}")（是=保留）"
+  else
+    echo "模式: 保留数据升级"
+  fi
+  echo "来源: $(source_choice_label "${source_choice}")"
+  echo "通道: $(channel_choice_label "${channel_choice}")"
+  echo "指定 tag: $(value_or_unset "${explicit_tag}")"
+  echo "应用名: ${name}"
+  echo "数据目录: ${data_dir}"
+  echo "安装前缀: ${native_prefix}"
+  echo "可选软件: $(software_set_summary "${software_set}")"
+  echo "Skills: $(skill_set_summary "${skill_set}")"
+  printf '确认执行? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return
+  fi
+
+  if [[ "${mode_choice}" == "2" && "${reinstall_data_mode}" == "2" ]]; then
+    run_cmd rm -rf "${data_dir}"
+  fi
+
+  if [[ "${mode_choice}" == "2" ]]; then
+    execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}" "native-reinstall" "原生 npm 重装结果"
+  else
+    execute_native_install_plan "${source_choice}" "${channel_choice}" "${explicit_tag}" "${name}" "${data_dir}" "${native_prefix}" "${software_set}" "${skill_set}" "native-upgrade" "原生 npm 升级结果"
+  fi
+}
+
+native_repair_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_native_repair_from_config_file
+    return
+  fi
+
+  printf '\n=== 🔧 修复 Native 运行环境 ===\n'
+  echo "修复项:"
+  echo "  1) Node/npm"
+  echo "  2) Python/cmake/构建工具"
+  echo "  3) swap/低内存优化"
+  echo "  4) 全部"
+  local mode_choice
+  mode_choice=$(read_choice_default "请选择" "4")
+  local mode
+  mode=$(normalize_native_repair_mode "${mode_choice}")
+
+  printf '确认执行 Native 运行环境修复? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return
+  fi
+
+  execute_native_repair_plan "${mode}"
+}
+
+native_info_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_native_info_from_config_file
+    return
+  fi
+
+  printf '\n=== 📄 查看 Native 部署信息 ===\n'
+  local name data_dir
+  name=$(read_with_default "应用名（用于定位数据目录）" "openclaw_native")
+  name=$(trim_surrounding_spaces "${name}")
+  [[ -n "${name}" ]] || name="openclaw_native"
+  data_dir=$(read_with_default "数据目录" "$(default_data_dir_for_name "${name}")")
+  show_native_report "${name}" "${data_dir}"
+}
+
+native_uninstall_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_native_uninstall_from_config_file
+    return
+  fi
+
+  printf '\n=== 🗑️ 卸载 Native 实例 ===\n'
+  local name data_dir native_prefix mode
+  name=$(read_with_default "应用名（用于配置记录）" "openclaw_native")
+  name=$(trim_surrounding_spaces "${name}")
+  [[ -n "${name}" ]] || name="openclaw_native"
+  data_dir=$(read_with_default "数据目录" "$(default_data_dir_for_name "${name}")")
+  native_prefix=$(read_with_default "npm 安装前缀目录" "${data_dir}/native")
+
+  echo "卸载模式:"
+  echo "  1) 仅卸载 Native npm 包（保留数据）"
+  echo "  2) 卸载 Native npm 包并删除数据目录"
+  mode=$(read_choice_default "请选择" "1")
+
+  printf '二次确认：请输入应用名 %s\n' "${name}"
+  local confirm_name
+  confirm_name=$(read_required "确认应用名")
+  if [[ "${confirm_name}" != "${name}" ]]; then
+    log_error "二次确认失败，已取消"
+    return 1
+  fi
+
+  execute_native_uninstall_plan "${name}" "${data_dir}" "${native_prefix}" "${mode}"
 }
 
 default_adopt_config_path() {

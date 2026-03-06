@@ -346,6 +346,112 @@ hostdeps_ensure_swap_if_needed() {
   return 0
 }
 
+hostdeps_repair_node_npm() {
+  local node_major
+  node_major=$(hostdeps_detect_node_major)
+  if [[ "${node_major}" =~ ^[0-9]+$ ]] && (( node_major >= 22 )) && hostdeps_has_command npm; then
+    log_info "[hostdeps] Node.js/npm 已满足要求"
+    return 0
+  fi
+
+  log_error "[hostdeps] Node.js/npm 未满足要求（Node >=22 且包含 npm）"
+  local auto_fix="${OPENCLAWCTL_AUTO_FIX_HOST_DEPS:-1}"
+  if [[ "${auto_fix}" != "1" ]]; then
+    log_error "[hostdeps] 已禁用自动修复(OPENCLAWCTL_AUTO_FIX_HOST_DEPS!=1)"
+    return 1
+  fi
+  if [[ "$(hostdeps_current_os)" != "linux" ]]; then
+    log_error "[hostdeps] 非 Linux 系统请先手工安装 Node.js >= 22 与 npm"
+    return 1
+  fi
+
+  local pm
+  pm=$(hostdeps_detect_package_manager)
+  [[ -n "${pm}" ]] || {
+    log_error "[hostdeps] 未识别到受支持的 Linux 包管理器，无法自动补齐 Node.js/npm"
+    return 1
+  }
+
+  hostdeps_install_node_runtime "${pm}" || return 1
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "[hostdeps] dry-run 模式：Node.js/npm 自动补齐命令已输出"
+    return 0
+  fi
+
+  node_major=$(hostdeps_detect_node_major)
+  if [[ ! "${node_major}" =~ ^[0-9]+$ ]] || (( node_major < 22 )) || ! hostdeps_has_command npm; then
+    log_error "[hostdeps] 自动补齐后 Node.js/npm 仍不满足要求"
+    return 1
+  fi
+  return 0
+}
+
+hostdeps_repair_build_toolchain() {
+  local need_build_toolchain=0
+  local need_modern_cmake=0
+  local cmake_version
+  cmake_version=$(hostdeps_detect_cmake_version)
+
+  if ! hostdeps_has_command gcc || ! hostdeps_has_command g++ || ! hostdeps_has_command make || ! hostdeps_has_command git || ! hostdeps_has_command pkg-config; then
+    need_build_toolchain=1
+    log_error "[hostdeps] 构建工具链不完整（gcc/g++/make/git/pkg-config）"
+  fi
+  if ! hostdeps_version_gte "${cmake_version}" "3.19"; then
+    need_modern_cmake=1
+    log_error "[hostdeps] cmake 版本过低（需要 >= 3.19，当前: ${cmake_version:-not-found}）"
+  fi
+
+  if [[ "${need_build_toolchain}" -eq 0 && "${need_modern_cmake}" -eq 0 ]]; then
+    log_info "[hostdeps] Python/cmake/构建工具链已满足要求"
+    return 0
+  fi
+
+  local auto_fix="${OPENCLAWCTL_AUTO_FIX_HOST_DEPS:-1}"
+  if [[ "${auto_fix}" != "1" ]]; then
+    log_error "[hostdeps] 已禁用自动修复(OPENCLAWCTL_AUTO_FIX_HOST_DEPS!=1)"
+    return 1
+  fi
+
+  if [[ "${need_build_toolchain}" -eq 1 ]]; then
+    if [[ "$(hostdeps_current_os)" != "linux" ]]; then
+      log_error "[hostdeps] 非 Linux 系统请先手工安装构建工具链"
+      return 1
+    fi
+    local pm
+    pm=$(hostdeps_detect_package_manager)
+    [[ -n "${pm}" ]] || {
+      log_error "[hostdeps] 未识别到受支持的 Linux 包管理器，无法自动补齐构建工具链"
+      return 1
+    }
+    hostdeps_install_build_toolchain "${pm}" || return 1
+  fi
+
+  if [[ "${need_modern_cmake}" -eq 1 ]]; then
+    hostdeps_upgrade_cmake_if_needed "3.19" || return 1
+  fi
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "[hostdeps] dry-run 模式：构建工具链自动补齐命令已输出"
+    return 0
+  fi
+
+  cmake_version=$(hostdeps_detect_cmake_version)
+  if ! hostdeps_has_command gcc || ! hostdeps_has_command g++ || ! hostdeps_has_command make || ! hostdeps_has_command git || ! hostdeps_has_command pkg-config; then
+    log_error "[hostdeps] 自动补齐后构建工具链仍不完整"
+    return 1
+  fi
+  if ! hostdeps_version_gte "${cmake_version}" "3.19"; then
+    log_error "[hostdeps] 自动补齐后 cmake 仍低于 3.19"
+    return 1
+  fi
+  return 0
+}
+
+hostdeps_repair_swap() {
+  log_info "[hostdeps] 检查低内存/Swap 优化"
+  hostdeps_ensure_swap_if_needed
+}
+
 ensure_native_host_dependencies() {
   local action="${1:-native-install}"
   log_info "[hostdeps] native 宿主机依赖检查(action=${action})"

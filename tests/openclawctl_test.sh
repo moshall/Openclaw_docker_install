@@ -533,6 +533,64 @@ assert_contains "${panel_install_linux_output}" "quick_start.sh"
 panel_install_nonlinux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=darwin bash "${SCRIPT_PATH}" --dry-run --wizard panel-install 2>&1 || true)
 assert_contains "${panel_install_nonlinux_output}" "1Panel 安装仅支持 Linux 主机"
 
+# 19c) native upgrade/repair/uninstall wizard should support config mode
+native_upgrade_cfg="${tmpdir}/native-upgrade.cfg"
+cat > "${native_upgrade_cfg}" <<'EOF'
+SOURCE_CHOICE=1
+CHANNEL_CHOICE=1
+OFFICIAL_TAG=
+NAME=openclaw_native_upgrade_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_native_upgrade_cfg
+NATIVE_PREFIX=/opt/1panel/apps/openclaw_native_upgrade_cfg/native
+SOFTWARE_SET=gh
+SKILL_SET=obsidian-skills
+EOF
+native_upgrade_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native-upgrade --config-file "${native_upgrade_cfg}")
+assert_contains "${native_upgrade_output}" "原生 npm 升级结果"
+assert_contains "${native_upgrade_output}" "npm install -g --prefix /opt/1panel/apps/openclaw_native_upgrade_cfg/native openclaw@latest"
+
+native_repair_cfg="${tmpdir}/native-repair.cfg"
+cat > "${native_repair_cfg}" <<'EOF'
+MODE=node
+EOF
+native_repair_output=$(OPENCLAWCTL_AUTO_FIX_HOST_DEPS=1 OPENCLAWCTL_TEST_HOST_OS=linux OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu OPENCLAWCTL_TEST_HOST_OS_VERSION=20.10 OPENCLAWCTL_TEST_HOST_PM=apt OPENCLAWCTL_TEST_HOST_NODE_MAJOR=20 OPENCLAWCTL_TEST_HOST_HAS_NPM=0 bash "${SCRIPT_PATH}" --dry-run --wizard native-repair --config-file "${native_repair_cfg}")
+assert_contains "${native_repair_output}" "=== 🔧 修复 Native 运行环境 ==="
+assert_contains "${native_repair_output}" "deb.nodesource.com/setup_22.x"
+
+native_uninstall_cfg="${tmpdir}/native-uninstall.cfg"
+cat > "${native_uninstall_cfg}" <<'EOF'
+NAME=openclaw_native_upgrade_cfg
+DATA_DIR=/opt/1panel/apps/openclaw_native_upgrade_cfg
+NATIVE_PREFIX=/opt/1panel/apps/openclaw_native_upgrade_cfg/native
+MODE=2
+EOF
+native_uninstall_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard native-uninstall --config-file "${native_uninstall_cfg}")
+assert_contains "${native_uninstall_output}" "npm uninstall -g --prefix /opt/1panel/apps/openclaw_native_upgrade_cfg/native openclaw @qingchencloud/openclaw-zh"
+assert_contains "${native_uninstall_output}" "rm -rf /opt/1panel/apps/openclaw_native_upgrade_cfg"
+
+# 19d) panel deps/uninstall wizard should support linux dry-run and reject non-linux
+panel_deps_cfg="${tmpdir}/panel-deps.cfg"
+cat > "${panel_deps_cfg}" <<'EOF'
+HOST_PORT=4113
+EOF
+panel_deps_linux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-deps --config-file "${panel_deps_cfg}")
+assert_contains "${panel_deps_linux_output}" "=== 🧰 1Panel 环境依赖修复 ==="
+assert_contains "${panel_deps_linux_output}" "docker info"
+assert_contains "${panel_deps_linux_output}" "端口检查"
+
+panel_deps_nonlinux_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=darwin bash "${SCRIPT_PATH}" --dry-run --wizard panel-deps 2>&1 || true)
+assert_contains "${panel_deps_nonlinux_output}" "1Panel 环境依赖修复仅支持 Linux 主机"
+
+panel_uninstall_cfg="${tmpdir}/panel-uninstall.cfg"
+cat > "${panel_uninstall_cfg}" <<'EOF'
+NAME=openclaw_panel_del
+MODE=2
+DATA_DIR=/opt/1panel/apps/openclaw_panel_del
+EOF
+panel_uninstall_output=$(OPENCLAWCTL_TEST_HOST_PLATFORM=linux bash "${SCRIPT_PATH}" --dry-run --wizard panel-uninstall --config-file "${panel_uninstall_cfg}")
+assert_contains "${panel_uninstall_output}" "docker rm -f openclaw_panel_del"
+assert_contains "${panel_uninstall_output}" "rm -rf /opt/1panel/apps/openclaw_panel_del"
+
 # 20) adopt mode should output inferred config summary in dry-run
 adopt_cfg="${tmpdir}/adopt.cfg"
 cat > "${adopt_cfg}" <<'EOF'
