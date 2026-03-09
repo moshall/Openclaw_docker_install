@@ -186,6 +186,7 @@ docker_menu_output=$(printf '2\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIP
 assert_contains "${docker_menu_output}" "新安装 Docker 实例（推荐）"
 assert_contains "${docker_menu_output}" "运行环境维护"
 assert_contains "${docker_menu_output}" "查看 Docker 部署信息"
+assert_contains "${docker_menu_output}" "导出 Compose 编排文件（仅导出）"
 assert_not_contains "${docker_menu_output}" "管理 EasyClaw 工具"
 
 docker_maintenance_menu_output=$(printf '2\n4\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
@@ -234,6 +235,7 @@ assert_contains "${advanced_wizard_selector_output}" "1) install"
 assert_contains "${advanced_wizard_selector_output}" "9) native"
 assert_contains "${advanced_wizard_selector_output}" "15) panel-install"
 assert_contains "${advanced_wizard_selector_output}" "21) panel-uninstall"
+assert_contains "${advanced_wizard_selector_output}" "22) compose-export"
 
 advanced_dry_run_menu_output=$(printf '9\n3\n0\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${advanced_dry_run_menu_output}" "Advanced · Dry-run 预演"
@@ -246,6 +248,34 @@ assert_contains "${wizard_install_output}" "=== 🚀 安装新实例 ==="
 
 wizard_rebuild_output=$(printf 'openclaw_rebuild\nq\n' | bash "${SCRIPT_PATH}" --dry-run --wizard rebuild)
 assert_contains "${wizard_rebuild_output}" "=== 🛠️ 调整或重建实例 ==="
+
+wizard_compose_export_cfg="${tmpdir}/compose-export.cfg"
+cat > "${wizard_compose_export_cfg}" <<'EOF'
+NAME=openclaw_compose_cfg
+IMAGE=docker.io/1panel/openclaw:2026.2.20
+HOST_PORT=4555
+CONTAINER_PORT=18789
+DATA_DIR=/opt/1panel/apps/openclaw_compose_cfg
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=2
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=2
+EXTRA_PORTS=5001:5001,6000:6000/udp
+OUTPUT_FILE=/opt/1panel/apps/openclaw_compose_cfg/runtime/docker-compose.generated.yml
+EOF
+wizard_compose_export_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard compose-export --config-file "${wizard_compose_export_cfg}")
+assert_contains "${wizard_compose_export_output}" "=== 📄 导出 Docker Compose 编排文件 ==="
+assert_contains "${wizard_compose_export_output}" "version: \"3.9\""
+assert_contains "${wizard_compose_export_output}" "container_name: openclaw_compose_cfg"
+assert_contains "${wizard_compose_export_output}" "image: docker.io/1panel/openclaw:2026.2.20"
+assert_contains "${wizard_compose_export_output}" "- \"4555:18789\""
+assert_contains "${wizard_compose_export_output}" "- \"5001:5001\""
+assert_contains "${wizard_compose_export_output}" "- \"6000:6000/udp\""
+assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg:/root/.openclaw\""
+assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/runtime/root-local-bin:/root/.local/bin\""
+assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d\""
+assert_not_contains "${wizard_compose_export_output}" "/runtime/root-local-lib:/root/.local/lib"
+assert_contains "${wizard_compose_export_output}" "仅导出 compose 文件，不会执行 docker compose up/down"
 
 wizard_install_cfg="${tmpdir}/install.cfg"
 cat > "${wizard_install_cfg}" <<'EOF'

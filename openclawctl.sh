@@ -669,6 +669,177 @@ run_gateway_container() {
     openclaw gateway run
 }
 
+compose_yaml_escape() {
+  local raw="${1:-}"
+  printf '%s' "${raw}" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+compose_export_default_path() {
+  local data_dir="$1"
+  printf '%s\n' "${data_dir}/runtime/docker-compose.generated.yml"
+}
+
+compose_detect_persistence_defaults() {
+  local name="$1"
+  local data_dir="$2"
+
+  local bin_choice env_choice apt_cfg_choice cache_choice
+  bin_choice=$(load_persistence_choice "${data_dir}" "BIN_PERSIST" "${DEFAULT_ENABLE_BIN_PERSIST}")
+  env_choice=$(load_persistence_choice "${data_dir}" "ENV_PERSIST" "${DEFAULT_ENABLE_ENV_PERSIST}")
+  apt_cfg_choice=$(load_persistence_choice "${data_dir}" "APT_CFG_PERSIST" "${DEFAULT_ENABLE_APT_CONFIG_PERSIST}")
+  cache_choice=$(load_persistence_choice "${data_dir}" "CACHE_PERSIST" "${DEFAULT_ENABLE_CACHE_PERSIST}")
+
+  if [[ ! -f "$(persistence_profile_path "${data_dir}")" ]]; then
+    bin_choice=$(detect_persist_choice_from_container "${name}" "bin" "${bin_choice}")
+    env_choice=$(detect_persist_choice_from_container "${name}" "env" "${env_choice}")
+    apt_cfg_choice=$(detect_persist_choice_from_container "${name}" "aptcfg" "${apt_cfg_choice}")
+    cache_choice=$(detect_persist_choice_from_container "${name}" "cache" "${cache_choice}")
+  fi
+
+  printf '%s,%s,%s,%s\n' "${bin_choice}" "${env_choice}" "${apt_cfg_choice}" "${cache_choice}"
+}
+
+compose_collect_port_mappings() {
+  local host_port="$1"
+  local container_port="$2"
+  local extra_ports="${3:-}"
+  local mapping
+
+  printf '%s\n' "${host_port}:${container_port}"
+  for mapping in ${extra_ports}; do
+    [[ -n "${mapping}" ]] || continue
+    printf '%s\n' "${mapping}"
+  done
+}
+
+compose_collect_volume_mappings() {
+  local image="$1"
+  local data_dir="$2"
+  local enable_bin_persist="$3"
+  local enable_env_persist="$4"
+  local enable_apt_cfg_persist="$5"
+  local enable_cache_persist="$6"
+
+  printf '%s\n' "${data_dir}:/root/.openclaw"
+
+  if [[ "${enable_bin_persist}" == "1" ]]; then
+    printf '%s\n' "${data_dir}/runtime/root-local-bin:/root/.local/bin"
+    printf '%s\n' "${data_dir}/runtime/root-go-bin:/root/go/bin"
+    printf '%s\n' "${data_dir}/runtime/root-cargo-bin:/root/.cargo/bin"
+  fi
+
+  if [[ "${enable_env_persist}" == "1" ]]; then
+    printf '%s\n' "${data_dir}/runtime/usr-local-go:/usr/local/go"
+    if should_persist_node_modules_mount "${image}"; then
+      printf '%s\n' "${data_dir}/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules"
+    fi
+    printf '%s\n' "${data_dir}/runtime/root-local-lib:/root/.local/lib"
+    printf '%s\n' "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv"
+    printf '%s\n' "${data_dir}/runtime/root-local-pipx:/root/.local/pipx"
+    printf '%s\n' "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx"
+    printf '%s\n' "${data_dir}/runtime/root-rustup:/root/.rustup"
+    printf '%s\n' "${data_dir}/runtime/root-config:/root/.config"
+    printf '%s\n' "${data_dir}/runtime/root-ssh:/root/.ssh"
+    printf '%s\n' "${data_dir}/runtime/root-gitconfig:/root/.gitconfig"
+    printf '%s\n' "${data_dir}/runtime/root-docker:/root/.docker"
+    printf '%s\n' "${data_dir}/runtime/root-aws:/root/.aws"
+    printf '%s\n' "${data_dir}/runtime/root-kube:/root/.kube"
+    printf '%s\n' "${data_dir}/runtime/root-netrc:/root/.netrc"
+    printf '%s\n' "${data_dir}/runtime/root-npmrc:/root/.npmrc"
+    printf '%s\n' "${data_dir}/runtime/root-pypirc:/root/.pypirc"
+  fi
+
+  if [[ "${enable_apt_cfg_persist}" == "1" ]]; then
+    printf '%s\n' "${data_dir}/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d"
+    printf '%s\n' "${data_dir}/runtime/etc-apt-keyrings:/etc/apt/keyrings"
+  fi
+
+  if [[ "${enable_cache_persist}" == "1" ]]; then
+    printf '%s\n' "${data_dir}/runtime/root-npm-cache:/root/.npm"
+    printf '%s\n' "${data_dir}/runtime/root-go-pkg-mod:/root/go/pkg/mod"
+    printf '%s\n' "${data_dir}/runtime/root-cargo-registry:/root/.cargo/registry"
+    printf '%s\n' "${data_dir}/runtime/root-cargo-git:/root/.cargo/git"
+  fi
+}
+
+render_openclaw_compose_yaml() {
+  local name="$1"
+  local image="$2"
+  local data_dir="$3"
+  local host_port="$4"
+  local container_port="$5"
+  local extra_ports="$6"
+  local enable_bin_persist="$7"
+  local enable_env_persist="$8"
+  local enable_apt_cfg_persist="$9"
+  local enable_cache_persist="${10}"
+
+  local -a port_lines=()
+  local -a volume_lines=()
+  local mapping
+
+  while IFS= read -r mapping; do
+    [[ -n "${mapping}" ]] || continue
+    port_lines+=("      - \"$(compose_yaml_escape "${mapping}")\"")
+  done < <(compose_collect_port_mappings "${host_port}" "${container_port}" "${extra_ports}")
+
+  while IFS= read -r mapping; do
+    [[ -n "${mapping}" ]] || continue
+    volume_lines+=("      - \"$(compose_yaml_escape "${mapping}")\"")
+  done < <(compose_collect_volume_mappings "${image}" "${data_dir}" "${enable_bin_persist}" "${enable_env_persist}" "${enable_apt_cfg_persist}" "${enable_cache_persist}")
+
+  cat <<EOF
+version: "3.9"
+services:
+  openclaw:
+    container_name: $(compose_yaml_escape "${name}")
+    image: $(compose_yaml_escape "${image}")
+    user: "root"
+    restart: "$(compose_yaml_escape "${DEFAULT_RESTART_POLICY}")"
+    command: ["openclaw", "gateway", "run"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+$(printf '%s\n' "${port_lines[@]}")
+    volumes:
+$(printf '%s\n' "${volume_lines[@]}")
+EOF
+}
+
+export_openclaw_compose_file() {
+  local name="$1"
+  local image="$2"
+  local data_dir="$3"
+  local host_port="$4"
+  local container_port="$5"
+  local extra_ports="$6"
+  local enable_bin_persist="$7"
+  local enable_env_persist="$8"
+  local enable_apt_cfg_persist="$9"
+  local enable_cache_persist="${10}"
+  local output_file="${11}"
+  local compose_yaml
+
+  compose_yaml=$(render_openclaw_compose_yaml "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${extra_ports}" "${enable_bin_persist}" "${enable_env_persist}" "${enable_apt_cfg_persist}" "${enable_cache_persist}")
+  run_cmd mkdir -p "$(dirname "${output_file}")"
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "Compose 文件(预览)将写入: ${output_file}"
+    echo
+    echo "===== docker-compose.yml (preview) ====="
+    printf '%s\n' "${compose_yaml}"
+    echo "======================================="
+    log_info "仅导出 compose 文件，不会执行 docker compose up/down"
+    log_info "后续可手动校验: docker compose -f ${output_file} config"
+    return 0
+  fi
+
+  printf '%s\n' "${compose_yaml}" > "${output_file}"
+  log_info "Compose 文件已导出: ${output_file}"
+  log_info "仅导出 compose 文件，不会执行 docker compose up/down"
+  log_info "可手动执行: docker compose -f ${output_file} config"
+}
+
 easyclaw_target_dir() {
   local data_dir="$1"
   echo "${data_dir}/software/clawpanel"
@@ -2328,6 +2499,7 @@ load_simple_config_file() {
       SKILL_SET) SKILL_SET_CFG="${value}" ;;
       NATIVE_PREFIX) NATIVE_PREFIX_CFG="${value}" ;;
       EXTRA_PORTS) EXTRA_PORTS_CFG="${value}" ;;
+      OUTPUT_FILE) OUTPUT_FILE_CFG="${value}" ;;
     esac
   done < "${file_path}"
 }
@@ -2624,6 +2796,73 @@ run_deps_from_config_file() {
     done
   fi
   write_last_report "deps-manage" "${deps_status}" "${NAME_CFG}" "${data_dir}" "" "" "" "" "" "${deps_nonfatal_issues[@]}"
+}
+
+run_compose_export_from_config_file() {
+  NAME_CFG=""
+  IMAGE_CFG=""
+  DATA_DIR_CFG=""
+  HOST_PORT_CFG=""
+  CONTAINER_PORT_CFG=""
+  BIN_PERSIST_CHOICE_CFG=""
+  ENV_PERSIST_CHOICE_CFG=""
+  APT_CFG_PERSIST_CHOICE_CFG=""
+  CACHE_PERSIST_CHOICE_CFG=""
+  EXTRA_PORTS_CFG=""
+  OUTPUT_FILE_CFG=""
+  load_simple_config_file "${CONFIG_FILE}"
+
+  [[ -n "${NAME_CFG}" ]] || {
+    log_error "配置文件缺少容器名"
+    return 1
+  }
+
+  local data_dir
+  data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
+
+  local port_pair host_port container_port
+  port_pair=$(detect_existing_ports "${NAME_CFG}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
+  host_port="${HOST_PORT_CFG:-${port_pair%%,*}}"
+  container_port="${CONTAINER_PORT_CFG:-${port_pair##*,}}"
+
+  local image
+  image="${IMAGE_CFG:-$(detect_existing_image "${NAME_CFG}" "$(official_openclaw_image "latest")" "${data_dir}")}"
+
+  local persist_defaults bin_persist_choice env_persist_choice apt_cfg_persist_choice cache_persist_choice
+  persist_defaults=$(compose_detect_persistence_defaults "${NAME_CFG}" "${data_dir}")
+  bin_persist_choice="${BIN_PERSIST_CHOICE_CFG:-${persist_defaults%%,*}}"
+  env_persist_choice="${ENV_PERSIST_CHOICE_CFG:-$(printf '%s' "${persist_defaults}" | cut -d',' -f2)}"
+  apt_cfg_persist_choice="${APT_CFG_PERSIST_CHOICE_CFG:-$(printf '%s' "${persist_defaults}" | cut -d',' -f3)}"
+  cache_persist_choice="${CACHE_PERSIST_CHOICE_CFG:-$(printf '%s' "${persist_defaults}" | cut -d',' -f4)}"
+
+  local extra_ports
+  extra_ports="${EXTRA_PORTS_CFG:-$(detect_existing_extra_ports "${NAME_CFG}" "${host_port}" "${container_port}")}"
+  if ! extra_ports=$(normalize_extra_ports "${extra_ports}" "${host_port}" "${container_port}"); then
+    return 1
+  fi
+  if should_enable_easyclaw_web_port "0" "${NAME_CFG}" "${data_dir}"; then
+    extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+  if should_enable_claudecodeui_reserved_port "0" "${NAME_CFG}" "${data_dir}"; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+
+  local output_file
+  output_file="${OUTPUT_FILE_CFG:-$(compose_export_default_path "${data_dir}")}"
+
+  printf '\n=== 📄 导出 Docker Compose 编排文件 ===\n'
+  echo "容器名: ${NAME_CFG}"
+  echo "镜像: ${image}"
+  echo "端口映射: ${host_port}:${container_port}"
+  echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+  echo "持久化目录: ${data_dir}"
+  echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
+  echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
+  echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
+  echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
+  echo "Compose 导出路径: ${output_file}"
+
+  export_openclaw_compose_file "${NAME_CFG}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${extra_ports}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${output_file}"
 }
 
 info_wizard() {
@@ -4309,6 +4548,96 @@ uninstall_wizard() {
   if [[ "${mode}" == "2" ]]; then
     run_cmd rm -rf "${data_dir}"
   fi
+}
+
+compose_export_wizard() {
+  if [[ -n "${CONFIG_FILE}" ]]; then
+    run_compose_export_from_config_file
+    return
+  fi
+
+  printf '\n=== 📄 导出 Docker Compose 编排文件 ===\n'
+  echo "说明：仅导出 compose 文件，不会执行 docker compose up/down。"
+
+  local name
+  name=$(read_container_name "请输入容器名（用于识别现有配置）")
+
+  local default_data_dir detected_data_dir data_dir
+  default_data_dir=$(default_data_dir_for_name "${name}")
+  detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
+  data_dir=$(read_with_default "持久化目录" "${detected_data_dir}")
+
+  local detected_ports host_port container_port port_pair
+  port_pair=$(detect_existing_ports "${name}" "${DEFAULT_HOST_PORT}" "${DEFAULT_CONTAINER_PORT}")
+  detected_ports="${port_pair}"
+  host_port=$(read_with_default "宿主机端口" "${detected_ports%%,*}")
+  container_port=$(read_with_default "OpenClaw 容器内部端口" "${detected_ports##*,}")
+
+  local image
+  image=$(detect_existing_image "${name}" "$(official_openclaw_image "latest")" "${data_dir}")
+  image=$(read_with_default "镜像（仅用于 compose 展示）" "${image}")
+
+  local persist_defaults bin_persist_choice env_persist_choice apt_cfg_persist_choice cache_persist_choice
+  persist_defaults=$(compose_detect_persistence_defaults "${name}" "${data_dir}")
+  bin_persist_choice=$(printf '%s' "${persist_defaults}" | cut -d',' -f1)
+  env_persist_choice=$(printf '%s' "${persist_defaults}" | cut -d',' -f2)
+  apt_cfg_persist_choice=$(printf '%s' "${persist_defaults}" | cut -d',' -f3)
+  cache_persist_choice=$(printf '%s' "${persist_defaults}" | cut -d',' -f4)
+
+  echo "保留命令入口（bin）:"
+  echo "  1) 是"
+  echo "  2) 否"
+  bin_persist_choice=$(read_choice_default "请选择" "${bin_persist_choice}")
+  echo "保留运行环境（env）:"
+  echo "  1) 是"
+  echo "  2) 否"
+  env_persist_choice=$(read_choice_default "请选择" "${env_persist_choice}")
+  echo "APT源Key 持久化:"
+  echo "  1) 是"
+  echo "  2) 否"
+  apt_cfg_persist_choice=$(read_choice_default "请选择" "${apt_cfg_persist_choice}")
+  echo "缓存持久化(.npm/go mod/cargo):"
+  echo "  1) 是"
+  echo "  2) 否"
+  cache_persist_choice=$(read_choice_default "请选择" "${cache_persist_choice}")
+
+  local detected_extra_ports extra_ports_raw extra_ports
+  detected_extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
+  extra_ports_raw=$(read_with_default "扩展端口映射（逗号分隔，可留空）" "${detected_extra_ports}")
+  if ! extra_ports=$(normalize_extra_ports "${extra_ports_raw}" "${host_port}" "${container_port}"); then
+    return 1
+  fi
+  if should_enable_easyclaw_web_port "0" "${name}" "${data_dir}"; then
+    extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+  if should_enable_claudecodeui_reserved_port "0" "${name}" "${data_dir}"; then
+    extra_ports=$(ensure_claudecodeui_reserved_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
+  fi
+
+  local output_file
+  output_file=$(read_with_default "Compose 导出路径" "$(compose_export_default_path "${data_dir}")")
+
+  printf '\n--- 导出清单（确认前） ---\n'
+  echo "容器名: ${name}"
+  echo "镜像: ${image}"
+  echo "端口映射: ${host_port}:${container_port}"
+  echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+  echo "持久化目录: ${data_dir}"
+  echo "保留命令入口（bin）: $(choice_to_yes_no "${bin_persist_choice}")"
+  echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
+  echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
+  echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
+  echo "Compose 导出路径: ${output_file}"
+
+  printf '确认导出 compose 文件? (y/N): '
+  local confirm
+  IFS= read -r confirm
+  if ! validate_yes_no "${confirm}"; then
+    log_info "已取消"
+    return 0
+  fi
+
+  export_openclaw_compose_file "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${extra_ports}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${output_file}"
 }
 
 easyclaw_only_upgrade_wizard() {
