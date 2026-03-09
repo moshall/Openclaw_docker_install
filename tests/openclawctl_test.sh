@@ -64,13 +64,24 @@ assert_not_contains "${native_versions_stable_output}" "1.2.1-nightly.1"
 native_versions_nightly_output=$(OPENCLAWCTL_TEST_NATIVE_NPM_VERSIONS='1.0.0,1.1.0-beta.1,1.2.0,1.2.1-nightly.1,1.3.0' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; list_native_npm_versions_for_selection "@qingchencloud/openclaw-zh" "2" "2" "5"' 2>&1 || true)
 assert_contains "${native_versions_nightly_output}" "1.2.1-nightly.1"
 
-# 0e) persist helpers should fallback easyclaw web host port on conflict
+# 0e) persist helpers should fallback clawpanel web host port on conflict
 persist_easyclaw_mapping_output=$(OPENCLAWCTL_TEST_OCCUPIED_PORTS='4231' SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; EASYCLAW_DEFAULT_WEB_PORT=4231; CLAUDECODEUI_RESERVED_CONTAINER_PORT_1=7201; CLAUDECODEUI_RESERVED_CONTAINER_PORT_2=7202; CLAUDECODEUI_RESERVED_CONTAINER_PORT_3=7203; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; ensure_easyclaw_web_port_mapping "1" "4113" "18789" ""' 2>&1 || true)
 assert_contains "${persist_easyclaw_mapping_output}" "5231:4231"
 
+# 0e2) persist helper should detect clawpanel inside container for web port auto-enable
+persist_clawpanel_detect_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; tmpdir=$(mktemp -d); trap "rm -rf \"${tmpdir}\"" EXIT; cat > "${tmpdir}/docker" <<'"'"'EOF'"'"'
+#!/usr/bin/env bash
+if [[ "$*" == *"command -v clawpanel"* ]]; then
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "${tmpdir}/docker"; export PATH="${tmpdir}:${PATH}"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; if should_enable_easyclaw_web_port "0" "openclaw_detect_demo" ""; then echo "enabled"; else echo "disabled"; fi' 2>&1 || true)
+assert_contains "${persist_clawpanel_detect_output}" "enabled"
+
 # 0f) components helpers should load optional catalog and resolve labels
-components_catalog_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm easyclaw claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; optional_software_label "easyclaw"' 2>&1 || true)
-assert_contains "${components_catalog_output}" "EasyClaw"
+components_catalog_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; optional_software_label "clawpanel"' 2>&1 || true)
+assert_contains "${components_catalog_output}" "ClawPanel"
 
 # 0g) deps helpers should expose runtime dependency checker workflow
 deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=1; DEFAULT_DEP_SET="npm uv"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; manage_container_runtime_deps "openclaw_deps_test" "check" "npm uv go"' 2>&1 || true)
@@ -149,7 +160,7 @@ assert_not_contains "${docker_menu_output}" "管理 EasyClaw 工具"
 docker_maintenance_menu_output=$(printf '2\n4\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${docker_maintenance_menu_output}" "Docker 运行环境维护"
 assert_contains "${docker_maintenance_menu_output}" "容器依赖检测/补齐（npm/uv/go/rust）"
-assert_contains "${docker_maintenance_menu_output}" "EasyClaw 升级/修复"
+assert_contains "${docker_maintenance_menu_output}" "ClawPanel 升级/修复"
 
 docker_rebuild_menu_output=$(printf '2\n3\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${docker_rebuild_menu_output}" "Docker 调整配置并重建"
@@ -327,8 +338,8 @@ NAME=openclaw_easy_cfg
 DATA_DIR=/opt/1panel/apps/openclaw_easy_cfg
 EOF
 wizard_easyclaw_cfg_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard easyclaw --config-file "${wizard_easyclaw_cfg}")
-assert_contains "${wizard_easyclaw_cfg_output}" "git -C /opt/1panel/apps/openclaw_easy_cfg/software/easyclaw fetch --all --prune"
-assert_not_contains "${wizard_easyclaw_cfg_output}" "=== 📦 管理 EasyClaw 工具 ==="
+assert_contains "${wizard_easyclaw_cfg_output}" "docker exec openclaw_easy_cfg sh -lc <clawpanel-install-script>"
+assert_not_contains "${wizard_easyclaw_cfg_output}" "=== 📦 管理 ClawPanel 工具 ==="
 
 wizard_deps_cfg="${tmpdir}/deps.cfg"
 cat > "${wizard_deps_cfg}" <<'EOF'
@@ -374,10 +385,10 @@ assert_contains "${install_output}" "docker run --rm --user root -v /opt/1panel/
 assert_contains "${install_output}" "openclaw config set gateway.bind lan"
 assert_contains "${install_output}" "docker run -d --name openclaw_demo"
 assert_contains "${install_output}" "docker exec openclaw_demo sh -lc <runtime-path-repair-script>"
-assert_contains "${install_output}" "git clone https://github.com/moshall/easyclaw.git /opt/1panel/apps/openclaw_demo/software/easyclaw"
-assert_contains "${install_output}" "docker exec openclaw_demo bash -lc <easyclaw-install-script>"
-assert_contains "${install_output}" "docker exec -it openclaw_demo easyclaw tui"
-assert_contains "${install_output}" "docker exec -it openclaw_demo easyclaw web --port 4231"
+assert_contains "${install_output}" "docker exec openclaw_demo sh -lc <clawpanel-install-script>"
+assert_contains "${install_output}" "开始安装/升级 ClawPanel（npm: @milkkey/clawpanel）"
+assert_contains "${install_output}" "docker exec -it openclaw_demo clawpanel tui"
+assert_contains "${install_output}" "docker exec -it openclaw_demo clawpanel web --port 4231"
 assert_contains "${install_output}" "开始检测容器依赖: npm uv"
 assert_contains "${install_output}" "/runtime/root-local-bin:/root/.local/bin"
 assert_contains "${install_output}" "/runtime/root-go-bin:/root/go/bin"
@@ -427,9 +438,8 @@ assert_contains "${upgrade_output}" "/runtime/path-decls/openclaw-runtime-path.s
 assert_contains "${upgrade_output}" "docker exec openclaw_demo sh -lc <auth-perms-fix-script>"
 assert_contains "${upgrade_output}" "docker exec openclaw_demo sh -lc <apt-manual-restore-script>"
 assert_contains "${upgrade_output}" "docker exec openclaw_demo sh -lc <runtime-path-repair-script>"
-assert_contains "${upgrade_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw fetch --all --prune"
-assert_contains "${upgrade_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw pull --ff-only"
-assert_contains "${upgrade_output}" "docker exec openclaw_demo bash -lc <easyclaw-install-script>"
+assert_contains "${upgrade_output}" "docker exec openclaw_demo sh -lc <clawpanel-install-script>"
+assert_contains "${upgrade_output}" "开始检查并升级 ClawPanel（npm: @milkkey/clawpanel）"
 assert_contains "${upgrade_output}" "开始检测容器依赖: npm uv go"
 assert_contains "${upgrade_output}" "依赖档案将保存到:"
 assert_contains "${upgrade_output}" "-p 4231:4231"
@@ -449,13 +459,12 @@ uninstall_full_output=$(printf "%s" "${uninstall_full_input}" | bash "${SCRIPT_P
 assert_contains "${uninstall_full_output}" "docker rm -f openclaw_demo"
 assert_contains "${uninstall_full_output}" "rm -rf /opt/1panel/apps/openclaw_demo"
 
-# 5) easyclaw-only upgrade
+# 5) clawpanel-only upgrade
 easy_cli_only_input=$'2\n4\n2\nopenclaw_demo\n\ny\n0\n'
 easy_cli_only_output=$(printf "%s" "${easy_cli_only_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
-assert_contains "${easy_cli_only_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw fetch --all --prune"
-assert_contains "${easy_cli_only_output}" "git -C /opt/1panel/apps/openclaw_demo/software/easyclaw pull --ff-only"
-assert_contains "${easy_cli_only_output}" "docker exec openclaw_demo bash -lc <easyclaw-install-script>"
+assert_contains "${easy_cli_only_output}" "docker exec openclaw_demo sh -lc <clawpanel-install-script>"
+assert_contains "${easy_cli_only_output}" "开始检查并升级 ClawPanel（npm: @milkkey/clawpanel）"
 
 # 6) upgrade should allow abort when container is detected as running
 upgrade_abort_input=$'2\n2\nopenclaw_demo\n1\n1\n2\nc\nn\nq\n0\n'
@@ -814,7 +823,7 @@ info_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard info)
 assert_contains "${info_output}" "deployment-info.txt"
 assert_contains "${info_output}" ".openclaw-installer"
 
-# 23) install config should accept catalog-driven software extensions (easyclaw/obsidian)
+# 23) install config should accept catalog-driven software extensions (clawpanel/obsidian)
 wizard_install_catalog_cfg="${tmpdir}/install-catalog.cfg"
 cat > "${wizard_install_catalog_cfg}" <<'EOF'
 SOURCE_CHOICE=2
@@ -834,12 +843,12 @@ TOKEN_MODE=2
 TOKEN_MANUAL=token-catalog
 DEPS_INSTALL_CHOICE=1
 TARGET_DEPS=npm uv
-SOFTWARE_SET=easyclaw,obsidian
+SOFTWARE_SET=clawpanel,obsidian
 SKILL_SET=obsidian-skills
 EXTRA_PORTS=
 EOF
 wizard_install_catalog_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard install --config-file "${wizard_install_catalog_cfg}")
-assert_contains "${wizard_install_catalog_output}" "可选软件: EasyClaw、Obsidian CLI"
+assert_contains "${wizard_install_catalog_output}" "可选软件: ClawPanel、Obsidian CLI"
 
 # 24) positional info command should be accepted (openclaw info style)
 set +e
@@ -970,7 +979,7 @@ assert_contains "${wizard_upgrade_profile_output}" "已自动开启升级后依�
 assert_contains "${wizard_upgrade_profile_output}" "开始检测容器依赖: npm uv python3"
 assert_contains "${wizard_upgrade_profile_output}" "docker exec openclaw_upgrade_profile bash -lc <software-notebooklm-install-script>"
 
-# 29) persist should auto avoid easyclaw web host-port conflicts
+# 29) persist should auto avoid clawpanel web host-port conflicts
 persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"
 cat > "${persist_conflict_cfg}" <<'EOF'
 NAME=openclaw_persist_conflict

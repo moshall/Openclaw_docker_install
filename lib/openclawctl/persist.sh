@@ -625,13 +625,13 @@ ensure_easyclaw_web_port_mapping() {
   local selected
   selected=$(choose_easyclaw_web_mapping "${host_port}" "${container_port}" "${extra_ports}" || true)
   if [[ -z "${selected}" ]]; then
-    log_error "EasyClaw Web 端口自动映射失败，已保留当前端口配置"
+    log_error "ClawPanel Web 端口自动映射失败，已保留当前端口配置"
     echo "${extra_ports}"
     return
   fi
 
   if [[ "${selected}" != "${EASYCLAW_DEFAULT_WEB_PORT}:${EASYCLAW_DEFAULT_WEB_PORT}" ]]; then
-    printf '[INFO] 检测到 EasyClaw Web 默认端口冲突，已改用 %s\n' "${selected}" >&2
+    printf '[INFO] 检测到 ClawPanel Web 默认端口冲突，已改用 %s\n' "${selected}" >&2
   fi
 
   echo "${extra_ports}${extra_ports:+ }${selected}"
@@ -650,7 +650,7 @@ should_enable_easyclaw_web_port() {
     return 0
   fi
 
-  if [[ -n "${container_name}" ]] && docker exec "${container_name}" sh -lc 'command -v easyclaw >/dev/null 2>&1 || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1; then
+  if [[ -n "${container_name}" ]] && docker exec "${container_name}" sh -lc 'command -v clawpanel >/dev/null 2>&1 || command -v easyclaw >/dev/null 2>&1 || [ -d /root/.openclaw/software/clawpanel ] || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1; then
     return 0
   fi
 

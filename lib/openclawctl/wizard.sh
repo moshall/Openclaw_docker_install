@@ -96,7 +96,7 @@ show_docker_maintenance_menu() {
   echo " Docker 运行环境维护"
   echo "==============================="
   echo "1) 🔧 容器依赖检测/补齐（npm/uv/go/rust）"
-  echo "2) 📦 EasyClaw 升级/修复"
+  echo "2) 📦 ClawPanel 升级/修复"
   echo "0) 返回上级"
 }
 
@@ -262,7 +262,7 @@ show_advanced_wizard_selector_menu() {
   echo "1) install"
   echo "2) upgrade"
   echo "3) rebuild"
-  echo "4) easyclaw"
+  echo "4) clawpanel"
   echo "5) deps"
   echo "6) uninstall"
   echo "7) adopt"
@@ -289,7 +289,7 @@ advanced_wizard_key_from_choice() {
     1) printf 'install\n' ;;
     2) printf 'upgrade\n' ;;
     3) printf 'rebuild\n' ;;
-    4) printf 'easyclaw\n' ;;
+    4) printf 'clawpanel\n' ;;
     5) printf 'deps\n' ;;
     6) printf 'uninstall\n' ;;
     7) printf 'adopt\n' ;;
@@ -470,7 +470,7 @@ parse_global_flags() {
         shift
         ;;
       --help|-h)
-        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall] [--config-file path]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|clawpanel|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall] [--config-file path]"
         echo "或:   bash openclawctl.sh info --dry-run"
         echo "严格非交互模式: OPENCLAWCTL_STRICT_NONINTERACTIVE=1（要求同时传入 --wizard 与 --config-file）"
         echo "默认进入交互式菜单。"
@@ -479,7 +479,7 @@ parse_global_flags() {
       *)
         if [[ "${positional_wizard_set}" -eq 0 && -z "${SELECTED_WIZARD}" ]]; then
           case "$1" in
-            install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall)
+            install|upgrade|rebuild|clawpanel|easyclaw|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall)
               SELECTED_WIZARD="$1"
               positional_wizard_set=1
               shift
@@ -488,7 +488,7 @@ parse_global_flags() {
           esac
         fi
         log_error "未知参数: $1"
-        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|easyclaw|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall] [--config-file path]"
+        echo "用法: bash openclawctl.sh [--dry-run] [--wizard install|upgrade|rebuild|clawpanel|deps|uninstall|adopt|persist|native|native-upgrade|native-repair|native-info|native-uninstall|info|panel-install|panel-repair|panel-openclaw-install|panel-openclaw-adopt|panel-deps|panel-info|panel-uninstall] [--config-file path]"
         exit 1
         ;;
     esac
@@ -500,7 +500,7 @@ run_selected_wizard() {
     install) install_wizard ;;
     upgrade) upgrade_wizard ;;
     rebuild) safe_rebuild_wizard ;;
-    easyclaw) easyclaw_only_upgrade_wizard ;;
+    clawpanel|easyclaw) easyclaw_only_upgrade_wizard ;;
     deps) deps_manage_wizard ;;
     uninstall) uninstall_wizard ;;
     adopt) adopt_wizard ;;

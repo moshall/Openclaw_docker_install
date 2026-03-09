@@ -27,7 +27,7 @@ execute_install_plan() {
     deps_install_choice="1"
   fi
   target_deps=$(ensure_dep_set_for_software "${target_deps}" "${software_set}")
-  if token_in_list "easyclaw" ${software_set}; then
+  if token_in_list "clawpanel" ${software_set} || token_in_list "easyclaw" ${software_set}; then
     extra_ports=$(ensure_easyclaw_web_port_mapping "1" "${host_port}" "${container_port}" "${extra_ports}")
   fi
   if token_in_list "claudecodeui" ${software_set}; then
@@ -80,8 +80,8 @@ execute_install_plan() {
     fi
   fi
   if [[ "${easy_choice}" == "1" ]]; then
-    if ! run_optional_step "EasyClaw 安装/升级" install_easyclaw "${name}" "${data_dir}"; then
-      install_nonfatal_issues+=("EasyClaw 安装/升级失败")
+    if ! run_optional_step "ClawPanel 安装/升级" install_easyclaw "${name}" "${data_dir}"; then
+      install_nonfatal_issues+=("ClawPanel 安装/升级失败")
     fi
   fi
   if [[ "${deps_install_choice}" == "1" ]]; then
@@ -237,8 +237,8 @@ execute_upgrade_plan() {
   run_cmd docker exec "${name}" openclaw --version
 
   if [[ "${easyclaw_upgrade}" == "1" ]]; then
-    if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
-      upgrade_nonfatal_issues+=("EasyClaw 检查升级失败")
+    if ! run_optional_step "ClawPanel 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+      upgrade_nonfatal_issues+=("ClawPanel 检查升级失败")
     fi
   fi
   if [[ "${deps_repair_choice}" == "1" ]]; then

@@ -21,6 +21,9 @@ normalize_optional_list() {
   local out=""
   local token
   for token in ${raw}; do
+    case "${token}" in
+      easyclaw) token="clawpanel" ;;
+    esac
     if ! token_in_list "${token}" "${allowed[@]}"; then
       continue
     fi
@@ -547,7 +550,7 @@ install_selected_software() {
       notebooklm)
         install_software_notebooklm "${container_name}" || failed=1
         ;;
-      easyclaw)
+      clawpanel|easyclaw)
         install_easyclaw "${container_name}" "${data_dir}" || failed=1
         ;;
       claudecodeui)
@@ -652,16 +655,9 @@ EOF
   chmod +x "${wrapper}"
 }
 
-install_host_software_easyclaw() {
-  local data_dir="$1"
-  local target
-  target="$(host_software_dir "${data_dir}")/easyclaw"
-  run_cmd mkdir -p "$(host_software_dir "${data_dir}")"
-  if [[ -d "${target}/.git" ]]; then
-    run_cmd git -C "${target}" pull --ff-only
-  else
-    run_cmd git clone --depth=1 "https://github.com/moshall/easyclaw.git" "${target}"
-  fi
+install_host_software_clawpanel() {
+  local native_prefix="$1"
+  run_cmd npm install -g --prefix "${native_prefix}" "@milkkey/clawpanel"
 }
 
 install_host_software_guidance_wrapper() {
@@ -719,8 +715,8 @@ install_selected_software_host() {
       notebooklm)
         install_host_software_notebooklm "${data_dir}" "${native_prefix}" || failed=1
         ;;
-      easyclaw)
-        install_host_software_easyclaw "${data_dir}" || failed=1
+      clawpanel|easyclaw)
+        install_host_software_clawpanel "${native_prefix}" || failed=1
         ;;
       claudecodeui)
         install_host_software_npm_package "${native_prefix}" "${CLAUDECODEUI_NPM_PACKAGE}" || failed=1

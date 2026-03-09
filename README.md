@@ -22,7 +22,7 @@
 - 新安装 Docker 实例
 - 安全升级 Docker 实例（保留数据）
 - 调整配置并重建（端口、数据目录、Runtime 持久化）
-- 运行环境维护（依赖检测/补齐、EasyClaw 升级修复）
+- 运行环境维护（依赖检测/补齐、ClawPanel 升级修复）
 - 接管已有 Docker 实例
 - 查看部署信息
 - 卸载 Docker 实例
@@ -118,7 +118,7 @@ bash ./openclawctl.sh --dry-run --wizard install --config-file /path/to/install.
 - `install`
 - `upgrade`
 - `rebuild`
-- `easyclaw`
+- `clawpanel`
 - `deps`
 - `uninstall`
 - `adopt`

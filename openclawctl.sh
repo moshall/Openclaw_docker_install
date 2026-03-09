@@ -6,7 +6,7 @@ DRY_RUN=0
 DEFAULT_HOST_PORT="4113"
 DEFAULT_CONTAINER_PORT="18789"
 DEFAULT_RESTART_POLICY="unless-stopped"
-EASYCLAW_REPO="https://github.com/moshall/easyclaw.git"
+CLAWPANEL_NPM_PACKAGE="@milkkey/clawpanel"
 EASYCLAW_DEFAULT_WEB_PORT="4231"
 CLAUDECODEUI_RESERVED_CONTAINER_PORT_1="7201"
 CLAUDECODEUI_RESERVED_CONTAINER_PORT_2="7202"
@@ -24,7 +24,7 @@ OPENCLAWCTL_1PANEL_LAST_OUTPUT=""
 SELECTED_WIZARD=""
 CONFIG_FILE=""
 OPTIONAL_COMPONENTS_FILE="${OPENCLAWCTL_COMPONENTS_FILE:-${SCRIPT_DIR}/config/optional-components.conf}"
-DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm easyclaw claudecodeui obsidian ralph"
+DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"
 DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"
 OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"
 OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"
@@ -671,48 +671,19 @@ run_gateway_container() {
 
 easyclaw_target_dir() {
   local data_dir="$1"
-  echo "${data_dir}/software/easyclaw"
+  echo "${data_dir}/software/clawpanel"
 }
 
 easyclaw_container_install_dir() {
-  echo "/root/.openclaw/software/easyclaw"
+  echo "/root/.openclaw/software/clawpanel"
 }
 
 run_easyclaw_install_script() {
   local container_name="$1"
   local script='set -e
-need_python=0
-if ! command -v python3 >/dev/null 2>&1; then
-  need_python=1
-fi
-need_pip=0
-if command -v pip3 >/dev/null 2>&1; then
-  need_pip=0
-elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
-  need_pip=0
-else
-  need_pip=1
-fi
-python_can_create_venv() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    return 1
-  fi
-  local tmpd
-  tmpd=$(mktemp -d /tmp/openclaw-easyclaw-venv-check.XXXXXX 2>/dev/null || true)
-  if [ -z "$tmpd" ]; then
-    python3 -m venv -h >/dev/null 2>&1
-    return $?
-  fi
-  local rc=0
-  python3 -m venv "$tmpd/probe" >/dev/null 2>&1 || rc=$?
-  rm -rf "$tmpd" >/dev/null 2>&1 || true
-  [ "$rc" -eq 0 ]
-}
-need_venv=0
-if command -v python3 >/dev/null 2>&1; then
-  python_can_create_venv || need_venv=1
-else
-  need_venv=1
+need_npm=0
+if ! command -v npm >/dev/null 2>&1; then
+  need_npm=1
 fi
 pm=""
 if command -v apt-get >/dev/null 2>&1; then
@@ -724,149 +695,59 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v yum >/dev/null 2>&1; then
   pm="yum"
 fi
-if [ "$need_python" -eq 1 ] || [ "$need_pip" -eq 1 ] || [ "$need_venv" -eq 1 ]; then
+if [ "$need_npm" -eq 1 ]; then
   case "$pm" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y python3 python3-pip
-      if [ "$need_venv" -eq 1 ]; then
-        apt-get install -y python3-venv || true
-        if command -v python3 >/dev/null 2>&1 && ! python3 -m venv -h >/dev/null 2>&1; then
-          py_minor="$(python3 -c '\''import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'\'' 2>/dev/null || true)"
-          if [ -n "$py_minor" ]; then
-            apt-get install -y "python${py_minor}-venv" || true
-          fi
-        fi
-      fi
-      if [ "$need_pip" -eq 1 ] && command -v python3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
-        python3 -m ensurepip --upgrade || true
-      fi
+      apt-get install -y nodejs npm
       ;;
     apk)
-      apk add --no-cache python3 py3-pip py3-virtualenv
+      apk add --no-cache nodejs npm
       ;;
     dnf)
-      dnf install -y python3 python3-pip python3-virtualenv || dnf install -y python3 python3-pip
+      dnf install -y nodejs npm
       ;;
     yum)
-      yum install -y python3 python3-pip python3-virtualenv || yum install -y python3 python3-pip
+      yum install -y nodejs npm
       ;;
     *)
-      echo "[easyclaw] no supported package manager found for python3/python3-pip/python3-venv"
+      echo "[clawpanel] no supported package manager found for nodejs/npm"
       exit 1
       ;;
   esac
 fi
-if [ "$need_venv" -eq 1 ] && ! python_can_create_venv; then
-  echo "[easyclaw] python venv is still unavailable after dependency install"
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[clawpanel] npm is unavailable after dependency install"
   exit 1
 fi
 
-easyclaw_venv_dir="/root/.openclaw/software/easyclaw/.venv"
-if [ -d "$easyclaw_venv_dir" ]; then
-  if [ ! -x "$easyclaw_venv_dir/bin/python3" ] || [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
-    rm -rf "$easyclaw_venv_dir"
-  fi
-fi
-if [ ! -d "$easyclaw_venv_dir" ]; then
-  python3 -m venv "$easyclaw_venv_dir" >/dev/null 2>&1 || true
-fi
-if [ ! -x "$easyclaw_venv_dir/bin/pip" ] && [ -x "$easyclaw_venv_dir/bin/python3" ]; then
-  "$easyclaw_venv_dir/bin/python3" -m ensurepip --upgrade >/dev/null 2>&1 || true
-fi
-if [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
-  rm -rf "$easyclaw_venv_dir"
-  python3 -m venv "$easyclaw_venv_dir" >/dev/null 2>&1 || true
-fi
-if [ ! -x "$easyclaw_venv_dir/bin/pip" ]; then
-  echo "[easyclaw] python virtualenv is broken: missing pip in ${easyclaw_venv_dir}"
-  exit 1
-fi
-
-cd /root/.openclaw/software/easyclaw
-EASYCLAW_INSTALL_DIR=/root/.openclaw/software/easyclaw \
-EASYCLAW_BIN_DIR=/usr/local/bin \
-OPENCLAW_HOME=/root/.openclaw \
-EASYCLAW_WEB_PORT='"${EASYCLAW_DEFAULT_WEB_PORT}"' \
-bash install.sh'
-  run_cmd_brief "docker exec ${container_name} bash -lc <easyclaw-install-script>" \
-    docker exec "${container_name}" bash -lc "${script}"
+npm install -g '"${CLAWPANEL_NPM_PACKAGE}"'
+if command -v clawpanel >/dev/null 2>&1 && [ -d /usr/local/bin ]; then
+  ln -sf "$(command -v clawpanel)" /usr/local/bin/clawpanel || true
+fi'
+  run_cmd_brief "docker exec ${container_name} sh -lc <clawpanel-install-script>" \
+    docker exec "${container_name}" sh -lc "${script}"
 }
 
 install_easyclaw() {
   local container_name="$1"
   local data_dir="$2"
-  local target_dir
-  target_dir=$(easyclaw_target_dir "${data_dir}")
-
-  run_cmd mkdir -p "$(dirname "${target_dir}")"
+  run_cmd mkdir -p "$(dirname "$(easyclaw_target_dir "${data_dir}")")"
 
   if [[ "${OPENCLAWCTL_TEST_FORCE_EASYCLI_FAIL:-0}" == "1" ]]; then
     return 1
   fi
 
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    if [[ -d "${target_dir}/.git" ]]; then
-      run_cmd git -C "${target_dir}" pull --ff-only
-    else
-      run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
-    fi
-    run_easyclaw_install_script "${container_name}"
-    return
-  fi
-
-  if [[ -d "${target_dir}/.git" ]]; then
-    run_cmd git -C "${target_dir}" pull --ff-only
-  else
-    run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
-  fi
+  log_info "开始安装/升级 ClawPanel（npm: ${CLAWPANEL_NPM_PACKAGE}）"
   run_easyclaw_install_script "${container_name}"
 }
 
 check_and_upgrade_easyclaw() {
   local container_name="$1"
   local data_dir="$2"
-  local target_dir
-  target_dir=$(easyclaw_target_dir "${data_dir}")
-
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    if [[ ! -d "${target_dir}/.git" ]]; then
-      run_cmd git clone "${EASYCLAW_REPO}" "${target_dir}"
-    fi
-    run_cmd git -C "${target_dir}" fetch --all --prune
-    run_cmd git -C "${target_dir}" rev-list --left-right --count HEAD...@{upstream}
-    run_cmd git -C "${target_dir}" pull --ff-only
-    run_easyclaw_install_script "${container_name}"
-    return
-  fi
-
-  if [[ ! -d "${target_dir}/.git" ]]; then
-    log_info "未发现 EasyClaw 仓库，开始自动安装: ${target_dir}"
-    install_easyclaw "${container_name}" "${data_dir}"
-    return
-  fi
-
-  run_cmd git -C "${target_dir}" fetch --all --prune
-
-  local upstream
-  upstream=$(git -C "${target_dir}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
-  if [[ -z "${upstream}" ]]; then
-    log_info "EasyClaw 未配置上游分支，跳过版本检查"
-    run_easyclaw_install_script "${container_name}"
-    return
-  fi
-
-  local counts ahead behind
-  counts=$(git -C "${target_dir}" rev-list --left-right --count HEAD...@{upstream})
-  read -r ahead behind <<<"${counts}"
-
-  if [[ -n "${behind}" && "${behind}" -gt 0 ]]; then
-    log_info "检测到 EasyClaw 可升级（落后 ${behind} 个提交），开始升级"
-    run_cmd git -C "${target_dir}" pull --ff-only
-  else
-    log_info "EasyClaw 已是最新"
-  fi
+  log_info "开始检查并升级 ClawPanel（npm: ${CLAWPANEL_NPM_PACKAGE}）"
+  run_cmd mkdir -p "$(dirname "$(easyclaw_target_dir "${data_dir}")")"
   run_easyclaw_install_script "${container_name}"
 }
 
@@ -2039,7 +1920,7 @@ network_group_summary() {
   local extra_desc
   extra_desc=$(display_port_mappings "${extra_ports}")
   if [[ "${easyclaw_enabled}" == "1" ]]; then
-    echo "绑定=$(bind_choice_label "${bind_choice}") | 主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | EasyClaw Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
+    echo "绑定=$(bind_choice_label "${bind_choice}") | 主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | ClawPanel Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
   else
     echo "绑定=$(bind_choice_label "${bind_choice}") | 主端口=${host_port}:${container_port} | 补充端口=${extra_desc}"
   fi
@@ -2053,7 +1934,7 @@ network_group_summary_no_bind() {
   local extra_desc
   extra_desc=$(display_port_mappings "${extra_ports}")
   if [[ "${easyclaw_enabled}" == "1" ]]; then
-    echo "主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | EasyClaw Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
+    echo "主端口=${host_port}:${container_port} | 补充端口=${extra_desc} | ClawPanel Web 将自动补 ${EASYCLAW_DEFAULT_WEB_PORT}"
   else
     echo "主端口=${host_port}:${container_port} | 补充端口=${extra_desc}"
   fi
@@ -2064,9 +1945,9 @@ feature_group_summary() {
   local deps_choice="$2"
   local dep_set="$3"
   if [[ "${deps_choice}" == "1" ]]; then
-    echo "EasyClaw=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=是 | $(deps_summary_line "${dep_set}")"
+    echo "ClawPanel=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=是 | $(deps_summary_line "${dep_set}")"
   else
-    echo "EasyClaw=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=否"
+    echo "ClawPanel=$(choice_to_yes_no "${easy_choice}") | 依赖补齐=否"
   fi
 }
 
@@ -2387,9 +2268,9 @@ print_human_summary() {
   echo "官方Cli命令："
   echo "docker exec -it ${container_name} openclaw onboard"
   echo
-  echo "EasyClaw 管理工具："
-  echo "docker exec -it ${container_name} easyclaw tui"
-  echo "docker exec -it ${container_name} easyclaw web --port ${EASYCLAW_DEFAULT_WEB_PORT}"
+  echo "ClawPanel 管理工具："
+  echo "docker exec -it ${container_name} clawpanel tui"
+  echo "docker exec -it ${container_name} clawpanel web --port ${EASYCLAW_DEFAULT_WEB_PORT}"
   echo "若已启动 Web UI，可访问：http://Your Host IP:${easyclaw_host_port}/"
   if token_in_list "claudecodeui" ${installed_software_set}; then
     local claudecodeui_mapping claudecodeui_host_port
@@ -2531,7 +2412,7 @@ run_install_from_config_file() {
   echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
   echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
-  echo "EasyClaw: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
+  echo "ClawPanel: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
   echo "可选软件: $(software_set_summary "${software_set}")"
   echo "Skills: $(skill_set_summary "${skill_set}")"
   echo "依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
@@ -2593,7 +2474,7 @@ run_upgrade_from_config_file() {
   echo "保留运行环境（env）: $(choice_to_yes_no "${ENV_PERSIST_CHOICE_CFG}")"
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
   echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
-  echo "EasyClaw 检查升级: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
+  echo "ClawPanel 检查升级: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
   echo "升级后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
@@ -2656,18 +2537,18 @@ execute_easyclaw_upgrade_plan() {
   local name="$1"
   local data_dir="$2"
 
-  if ! run_preflight_checks "easyclaw-upgrade" "${name}" "${data_dir}"; then
+  if ! run_preflight_checks "clawpanel-upgrade" "${name}" "${data_dir}"; then
     log_error "preflight 未通过，请修复后重试"
     return 1
   fi
 
   local -a easy_nonfatal_issues=()
-  if ! run_optional_step "EasyClaw 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
-    easy_nonfatal_issues+=("EasyClaw 检查升级失败")
+  if ! run_optional_step "ClawPanel 检查升级" check_and_upgrade_easyclaw "${name}" "${data_dir}"; then
+    easy_nonfatal_issues+=("ClawPanel 检查升级失败")
   fi
   local easy_status="success"
   [[ "${#easy_nonfatal_issues[@]}" -gt 0 ]] && easy_status="success_with_warnings"
-  write_last_report "easyclaw-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
+  write_last_report "clawpanel-upgrade" "${easy_status}" "${name}" "${data_dir}" "" "" "" "" "" "${easy_nonfatal_issues[@]}"
 }
 
 run_uninstall_from_config_file() {
@@ -2697,9 +2578,9 @@ run_easyclaw_from_config_file() {
     return 1
   }
   local data_dir="${DATA_DIR_CFG:-$(default_data_dir_for_name "${NAME_CFG}")}"
-  printf '\n--- 当前操作：升级或重装 EasyClaw ---\n'
+  printf '\n--- 当前操作：升级或重装 ClawPanel ---\n'
   echo "容器名: ${NAME_CFG}"
-  echo "EasyClaw 目录: $(easyclaw_target_dir "${data_dir}")"
+  echo "ClawPanel 目录: $(easyclaw_target_dir "${data_dir}")"
   execute_easyclaw_upgrade_plan "${NAME_CFG}" "${data_dir}"
 }
 
@@ -3754,7 +3635,7 @@ install_wizard() {
         log_info "已更新：$(network_group_summary "${bind_choice}" "${host_port}" "${container_port}" "${extra_ports}" "${easy_choice}")"
         ;;
       5)
-        echo "是否安装 EasyClaw:"
+        echo "是否安装 ClawPanel:"
         echo "  1) 是"
         echo "  2) 否"
         easy_choice=$(read_choice_default "请选择" "${easy_choice}")
@@ -3865,7 +3746,7 @@ install_wizard() {
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
         echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
-        echo "EasyClaw: $(choice_to_yes_no "${easy_choice}")"
+        echo "ClawPanel: $(choice_to_yes_no "${easy_choice}")"
         echo "可选软件: $(software_set_summary "${software_set}")"
         echo "Skills: $(skill_set_summary "${skill_set}")"
         echo "依赖补齐: $(choice_to_yes_no "${deps_install_choice}")"
@@ -4047,7 +3928,7 @@ upgrade_wizard() {
         log_info "已更新：$(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
         ;;
       4)
-        echo "是否检查并升级 EasyClaw:"
+        echo "是否检查并升级 ClawPanel:"
         echo "  1) 是"
         echo "  2) 否"
         easyclaw_upgrade=$(read_choice_default "请选择" "${easyclaw_upgrade}")
@@ -4088,7 +3969,7 @@ upgrade_wizard() {
         echo "保留运行环境（env）: $(choice_to_yes_no "${env_persist_choice}")"
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
         echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
-        echo "EasyClaw 检查升级: $(choice_to_yes_no "${easyclaw_upgrade}")"
+        echo "ClawPanel 检查升级: $(choice_to_yes_no "${easyclaw_upgrade}")"
         echo "升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${upgrade_dep_set}"
@@ -4434,7 +4315,7 @@ easyclaw_only_upgrade_wizard() {
     run_easyclaw_from_config_file
     return
   fi
-  printf '\n=== 📦 管理 EasyClaw 工具 ===\n'
+  printf '\n=== 📦 管理 ClawPanel 工具 ===\n'
   local name
   name=$(read_container_name "请输入容器名（用于定位持久化目录）")
 
@@ -4444,12 +4325,12 @@ easyclaw_only_upgrade_wizard() {
   detected_data_dir=$(detect_existing_data_dir "${name}" "${default_data_dir}")
 
   local data_dir
-  data_dir=$(read_with_default "EasyClaw 所在持久化目录" "${detected_data_dir}")
+  data_dir=$(read_with_default "ClawPanel 所在持久化目录" "${detected_data_dir}")
 
-  printf '\n--- 当前操作：升级或重装 EasyClaw ---\n'
+  printf '\n--- 当前操作：升级或重装 ClawPanel ---\n'
   echo "容器名: ${name}"
-  echo "EasyClaw 目录: $(easyclaw_target_dir "${data_dir}")"
-  printf '确认执行 EasyClaw 升级/重装? (y/N): '
+  echo "ClawPanel 目录: $(easyclaw_target_dir "${data_dir}")"
+  printf '确认执行 ClawPanel 升级/重装? (y/N): '
   local confirm
   IFS= read -r confirm
   if ! validate_yes_no "${confirm}"; then
