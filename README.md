@@ -1,250 +1,199 @@
-# OpenClaw Docker 部署助手
+# OpenClaw 安装助手（openclawctl）
 
-一个面向 OpenClaw 的部署与运维工具，采用 `Shell 执行引擎 + Go TUI 前端` 架构，支持：
+`openclawctl` 是 OpenClaw 的一键安装与运维脚本，面向小白用户设计。
 
-- 新装实例
-- 升级实例（低版本 -> 高版本）
-- 安全重建（端口/挂载调整）
-- 卸载（安全卸载 / 完整卸载）
-- 接管外部手工安装容器（adopt）
-- 追加 Runtime 持久化重建（persist）
-- 原生 npm 安装入口（native）
-- EasyClaw 管理
-- 容器依赖检测与补齐（默认 `npm uv`，可选 `go/rust`）
-- 可选软件预装（`gh/claude/codex/opencode/gemini/notebooklm/easyclaw/claudecodeui/obsidian/ralph`）
-- Skill 预装（`obsidian-skills/security-checker`）
+当前版本交互方式已统一为：
+- 仅保留 **简单 Shell 菜单**
+- 不再启用复杂 TUI 前端
 
-## 目录结构
+---
 
-```text
-.
-├── openclawctl.sh              # 主脚本（真实执行入口）
-├── quick_start.sh              # 远程一键入口（curl | bash）
-├── lib/
-│   └── openclawctl/            # openclawctl 模块脚本（按职责拆分）
-│       ├── bootstrap.sh
-│       ├── common.sh
-│       ├── io.sh
-│       ├── image.sh
-│       ├── persist.sh
-│       ├── components.sh
-│       ├── deps.sh
-│       ├── ops.sh
-│       └── wizard.sh
-├── config/
-│   └── optional-components.conf # 可选软件/Skill 配置目录（可扩展）
-├── installer/
-│   └── v07/                    # v0.7 重构版安装器（新入口）
-│       ├── openclaw-install.sh
-│       ├── lib/
-│       └── templates/
-├── cmd/
-│   └── openclawctl/            # Go TUI（交互前端）
-├── internal/
-│   └── app/                    # TUI 公共模型/菜单配置
-├── tests/
-│   └── openclawctl_test.sh     # Shell 交互回归测试
-│   ├── installer_v07_*_test.sh # v0.7 本地非实装测试
-│   └── e2e/                    # 真机回归脚本（需目标 VPS）
-├── docs/
-│   └── plans/                  # 设计文档
-│   └── rewrite-v0.7/           # v0.7 迁移/发布文档
-├── go.mod
-├── go.sum
-└── README.md
-```
+## 功能描述
 
-模块化映射文档：`docs/rewrite-v0.7/openclawctl-modular-map.md`
+### 1) Native 实体机安装与管理（Mac/Linux）
+- 新安装 OpenClaw（Native npm）
+- 升级/重装 Native 实例
+- 修复 Native 运行环境（Node/npm、构建工具链等）
+- 查看部署信息
+- 卸载 Native 实例
+- 支持可选软件安装与 Skills 预装
 
-## 2026-03-05 模块化全量回归（Task 9）
+### 2) Docker 隔离环境安装与管理（Mac/Linux）
+- 新安装 Docker 实例
+- 安全升级 Docker 实例（保留数据）
+- 调整配置并重建（端口、数据目录、Runtime 持久化）
+- 运行环境维护（依赖检测/补齐、EasyClaw 升级修复）
+- 接管已有 Docker 实例
+- 查看部署信息
+- 卸载 Docker 实例
 
-已在本仓库执行并通过：
+### 3) 远程 VPS 1Panel 版 Docker 安装与管理（Linux）
+- 安装 1Panel
+- 升级/修复 1Panel
+- 在 1Panel 环境安装 OpenClaw（Docker）
+- 接管已有 1Panel/OpenClaw 实例
+- 1Panel 环境依赖修复
+- 查看部署信息
+- 卸载 1Panel 环境下 OpenClaw 实例
 
-```bash
-bash tests/openclawctl_test.sh
-go test ./...
-bash tests/installer_v07_smoke_test.sh
-bash tests/installer_v07_1panel_test.sh
-```
+### 核心能力（通用）
+- 官方/中文版镜像与通道选择（stable/latest/nightly）
+- 官方 tag 列表拉取与指定版本安装/升级
+- 升级/重建前 runtime 数据预迁移与挂载一致性校验
+- runtime 持久化策略：`bin/env/apt/cache`
+- `path shim/symlink` 持久化清单支持
+- Docker/Node/npm/构建工具自动检测与补齐（面向小白）
+- `--dry-run` 全流程预演（不实际安装）
 
-## 运行方式
+---
 
-```bash
-bash ./openclawctl.sh
-```
+## 安装方法
 
-## 远程一键入口（GitHub）
-
-可以直接使用 GitHub Raw 链接：
+### 方法 A：一键远程启动（推荐）
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/moshall/Openclaw_docker_install/main/quick_start.sh)"
 ```
 
-是的，域名可以直接使用 GitHub（`raw.githubusercontent.com` + `codeload.github.com`）。
-
-补充：
-
-- 指定分支/标签：`OPENCLAWCTL_REF=v0.7.0`
-- 私有/镜像源码目录：`OPENCLAWCTL_QUICKSTART_SOURCE_DIR=/path/to/repo`
-- 透传参数示例：
+仅预演（不执行真实安装）：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/moshall/Openclaw_docker_install/main/quick_start.sh)" -- --dry-run
 ```
 
-说明：
-
-- 交互式终端（TTY）中，默认优先启动 Go TUI。
-- 非 TTY（管道、计划任务、脚本）自动回退到 Shell 菜单。
-- 如需强制使用 Shell：
+指定分支/标签：
 
 ```bash
-OPENCLAWCTL_FORCE_SHELL=1 bash ./openclawctl.sh
+OPENCLAWCTL_REF=v0.7.2 bash -c "$(curl -fsSL https://raw.githubusercontent.com/moshall/Openclaw_docker_install/v0.7.2/quick_start.sh)" -- --dry-run
 ```
 
-- 预演模式（仅打印命令，不执行）：
+### 方法 B：本地源码运行
+
+```bash
+git clone https://github.com/moshall/Openclaw_docker_install.git
+cd Openclaw_docker_install
+bash ./openclawctl.sh
+```
+
+仅预演：
 
 ```bash
 bash ./openclawctl.sh --dry-run
 ```
 
-## v0.7 重构版入口（开发中）
+---
 
-v0.7 重构版脚本入口：
+## 使用方法
 
-```bash
-bash ./installer/v07/openclaw-install.sh --help
-```
-
-严格非交互（批量回归）示例：
+### 启动菜单
 
 ```bash
-OPENCLAWCTL_STRICT_NONINTERACTIVE=1 \
-bash ./installer/v07/openclaw-install.sh \
-  --wizard install \
-  --config-file /path/to/install.cfg
+bash ./openclawctl.sh
 ```
 
-说明：
+主菜单：
 
-- `--wizard` 支持：`install|upgrade|rebuild|status|logs|uninstall|adopt|persist|native|info`
-- 严格模式会输出 `STRICT_REPORT_PATH=.../runtime/strict-report.json`
-- 支持 `info` 入口读取部署信息（`~/.openclaw-installer/deployment-info.txt`）。
+```text
+OpenClaw 部署助手
+1) Native 实体机安装与管理（Mac/Linux）
+2) Docker 隔离环境安装与管理（Mac/Linux）
+3) 远程 VPS 1Panel 版 Docker 隔离环境安装与管理（Linux）
+9) 高级模式（开发者）
+0) 退出
+```
 
-## 镜像策略
+### 常用操作建议
 
-中文版镜像：
+- 第一次使用（Mac/Linux 普通用户）：优先走 `2) Docker 隔离环境安装与管理`
+- 本机不装 Docker 的场景：走 `1) Native`
+- 远程 Linux VPS + 面板管理：走 `3) 1Panel`
 
-- 稳定版：`ghcr.io/1186258278/openclaw-zh:latest`
-- 最新版：`ghcr.io/1186258278/openclaw-zh:nightly`
+### 非交互执行（自动化/批量）
 
-官方镜像（默认）：
+```bash
+bash ./openclawctl.sh --dry-run --wizard install --config-file /path/to/install.cfg
+```
 
-- 稳定版：`docker.io/1panel/openclaw:latest`
-- 最新版：`docker.io/1panel/openclaw:beta`
+支持的 `--wizard`：
+- `install`
+- `upgrade`
+- `rebuild`
+- `easyclaw`
+- `deps`
+- `uninstall`
+- `adopt`
+- `persist`
+- `native`
+- `native-upgrade`
+- `native-repair`
+- `native-info`
+- `native-uninstall`
+- `info`
+- `panel-install`
+- `panel-repair`
+- `panel-openclaw-install`
+- `panel-openclaw-adopt`
+- `panel-deps`
+- `panel-info`
+- `panel-uninstall`
 
-补充：
+---
 
-- 官方源支持自动拉取 tag 并手动选择具体版本（例如 `2026.2.26`）。
-- 升级/安装前会校验官方 tag 是否存在；若不存在会打印可选 tag，并自动回退到最近可用版本。
-- 兼容短 tag 输入（如 `260226`），会优先尝试映射到 `2026.2.26`。
-- 可通过 `OPENCLAW_OFFICIAL_REPO` 覆盖官方仓库（例如 `alpine/openclaw`）。
-- 为保证 `.openclaw` 路径一致，脚本统一以 `--user root` 执行 OpenClaw 配置与容器启动。
+## 目录与数据说明
 
-## 持久化目录策略
+默认数据根目录：
+- macOS：`$HOME/.openclaw/apps/<name>`
+- Linux（非 1Panel）：`/opt/openclaw/apps/<name>`
+- 1Panel：`/opt/1panel/apps/<name>`
 
-默认目录按环境自动判断：
+部署信息：
+- `~/.openclaw-installer/deployment-info.txt`
 
-1. 若设置 `OPENCLAWCTL_DATA_ROOT`，优先使用该目录。
-2. 检测到 1Panel 环境时：`/opt/1panel/apps/<容器名>`
-3. 非 1Panel 环境：
-   - Linux：`/opt/openclaw/apps/<容器名>`
-   - macOS：`$HOME/.openclaw/apps/<容器名>`
+---
 
-安装向导会优先扫描 `7100-7200` 端口段并给出推荐主端口。
-选择 `claudecodeui` 预装时，会自动占用预留端口段（主端口 `+1/+2/+3` 对应容器 `7201/7202/7203`）并安装 `task-master-ai` 集成。
+## 兼容性说明
 
-## 关键安全机制
+- `1Panel` 功能真实执行仅支持 Linux 主机
+- 在 macOS 下可做 `--dry-run` 预演
+- 当前版本已强制统一为简单 Shell 菜单，避免双 UI 维护成本
 
-- Preflight 检查：Docker 可用性、目录可写、镜像仓库、端口信息。
-- 目录错挂载保护：
-  - 升级/重建时若检测“当前挂载目录”与“本次目录”不一致，默认中止。
-  - 可显式放行：`OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1`
-- 升级前兼容修复：`openclaw doctor --fix`
-- `lan` 绑定下自动尝试写入 Control UI 兼容项（不支持的旧键会自动跳过，不阻断主流程）。
-- APT 手工包回放前会先校验 `sources.list.d` 格式，并自动隔离异常源文件，降低升级后依赖补齐失败概率。
-- 支持严格非交互模式：用于批量回归时输出固定路径 JSON 报告（`runtime/strict-report.json`）。
-- 安装/升级/重建/接管后会写入 `~/.openclaw-installer/deployment-info.txt`（可用 `--wizard info` 查看）。
+---
 
-## Docker 与环境补齐
-
-- Docker 缺失时：
-  - Linux 可自动安装（`OPENCLAWCTL_AUTO_INSTALL_DOCKER=1` 可无交互）
-  - macOS 提供 Docker Desktop 引导
-- 依赖补齐：支持 apt/apk/dnf/yum 生态，支持 `npm uv go rust` 组合。
-- Rust 持久化：支持 `bin/env/cache` 分层挂载（`/root/.cargo/bin`、`/root/.rustup`、`/root/.cargo/{registry,git}`）。
-- runtime 持久化支持：bin/env/apt 配置/cache 分层选择。
-
-## 常用环境变量
-
-- `OPENCLAWCTL_DATA_ROOT`：自定义持久化根目录。
-- `OPENCLAW_OFFICIAL_REPO`：覆盖官方镜像仓库。
-- `OPENCLAWCTL_AUTO_INSTALL_DOCKER=1`：自动安装 Docker（Linux/macOS）。
-- `OPENCLAWCTL_ALLOW_DATA_DIR_MISMATCH=1`：放行目录不一致升级。
-- `OPENCLAWCTL_ALLOWED_ORIGINS`：Control UI 显式 allowed origins。
-- `OPENCLAWCTL_TRUSTED_PROXIES`：网关 trusted proxies。
-- `OPENCLAWCTL_FORCE_SHELL=1`：强制禁用 TUI，直接 Shell 菜单。
-- `OPENCLAWCTL_STRICT_NONINTERACTIVE=1`：严格非交互模式（要求同时传 `--wizard` + `--config-file`，并输出 `STRICT_REPORT_PATH`）。
-- `OPENCLAWCTL_COMPONENTS_FILE`：覆盖可选软件/Skill 目录文件路径（默认 `config/optional-components.conf`）。
-
-## 测试
+## 测试与回归
 
 在仓库根目录执行：
 
 ```bash
-bash -n ./openclawctl.sh
+bash tests/quick_start_test.sh
+bash tests/openclawctl_test.sh
+bash tests/installer_v07_smoke_test.sh
+bash tests/installer_v07_1panel_test.sh
 go test ./...
-bash ./tests/openclawctl_test.sh
-bash ./tests/installer_v07_smoke_test.sh
-bash ./tests/installer_v07_detect_test.sh
-bash ./tests/installer_v07_image_test.sh
-bash ./tests/installer_v07_port_test.sh
-bash ./tests/installer_v07_persist_test.sh
-bash ./tests/installer_v07_compose_test.sh
-bash ./tests/installer_v07_install_flow_test.sh
-bash ./tests/installer_v07_lifecycle_test.sh
-bash ./tests/installer_v07_report_test.sh
-bash ./tests/installer_v07_1panel_test.sh
-bash ./tests/installer_v07_docs_test.sh
-bash ./tests/quick_start_test.sh
 ```
 
-## 已验证场景
+---
 
-以下链路已在真实机器验证（**2026-03-02**，Ubuntu 22.04）：
+## 项目结构
 
-- 纯 Linux 路径：`/opt/openclaw/apps`
-  - `2026.2.6 -> 2026.2.26` 升级通过
-- 1Panel 路径：`/opt/1panel/apps`
-  - `2026.2.6 -> 2026.2.26` 升级通过
-
-说明：`2026.2.5` 在官方 tags 中不存在，因此低版本升级验证使用最接近可用版本 `2026.2.6`。
-
-补充：在 **2026-03-03** 的真机回归中，已验证官方短 tag `260205/260226` 不存在时会报清晰错误，并可使用可用 tag 列表进行回退升级。
-
-补充：在 **2026-03-03** 的扩展回归中，已覆盖：
-
-- 可选软件链路（gh/codex/claudecodeui）与 Skill 预装链路（obsidian-skills/security-checker）
-- `adopt` 接管配置生成、`persist` 追加 runtime 持久化
-- `native` 原生 npm 安装入口（Node22 前置检查）
-
-## 开发说明
-
-手工构建 TUI：
-
-```bash
-GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" GOTOOLCHAIN=auto go build -o ./.bin/openclawctl ./cmd/openclawctl
+```text
+.
+├── openclawctl.sh
+├── quick_start.sh
+├── lib/openclawctl/
+│   ├── bootstrap.sh
+│   ├── common.sh
+│   ├── io.sh
+│   ├── image.sh
+│   ├── persist.sh
+│   ├── components.sh
+│   ├── deps.sh
+│   ├── hostdeps.sh
+│   ├── ops.sh
+│   └── wizard.sh
+├── config/optional-components.conf
+├── cmd/openclawctl/          # 代码保留，当前交互已统一为简单菜单
+├── internal/
+├── installer/v07/
+├── tests/
+└── docs/
 ```
-
-运行后脚本会自动优先发现并启动 `./.bin/openclawctl`。
