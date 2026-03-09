@@ -78,8 +78,16 @@ assert_contains "${deps_manage_output}" "开始检测容器依赖: npm uv go"
 assert_contains "${deps_manage_output}" "依赖检测模式: 仅检测，不安装"
 
 # 0h) ops/wizard modules should expose execution and routing functions
-ops_wizard_symbol_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"; source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"; declare -F execute_install_plan >/dev/null; declare -F run_selected_wizard >/dev/null; echo "ops-wizard-ready"' 2>&1 || true)
+ops_wizard_symbol_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/image.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; source "${SCRIPT_DIR}/lib/openclawctl/panel.sh"; source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"; source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"; declare -F execute_install_plan >/dev/null; declare -F run_selected_wizard >/dev/null; echo "ops-wizard-ready"' 2>&1 || true)
 assert_contains "${ops_wizard_symbol_output}" "ops-wizard-ready"
+
+# 0h2) panel helpers should parse install output and render archive summary
+panel_parse_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c $'set -euo pipefail; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/panel.sh"; sample=$\'[INFO] 1Panel install success\\nPanel URL: http://10.0.0.9:26443/abc\\nUsername: admin\\nPassword: Abc123!\\n\'; fields=$(extract_1panel_install_summary_fields "${sample}"); echo "FIELDS=${fields}"; render_1panel_install_summary_text "http://10.0.0.9:26443/abc" "admin" "Abc123!" "/tmp/1panel-info.txt"' 2>&1 || true)
+assert_contains "${panel_parse_output}" "FIELDS=http://10.0.0.9:26443/abc|admin|Abc123!"
+assert_contains "${panel_parse_output}" "1Panel 安装汇总"
+assert_contains "${panel_parse_output}" "用户名：admin"
+assert_contains "${panel_parse_output}" "密码：Abc123!"
+assert_contains "${panel_parse_output}" "存档文件：/tmp/1panel-info.txt"
 
 # 0i) hostdeps helpers should report native host dependency gaps
 hostdeps_diag_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; OPENCLAWCTL_AUTO_FIX_HOST_DEPS=0; OPENCLAWCTL_TEST_HOST_OS=linux; OPENCLAWCTL_TEST_HOST_OS_ID=ubuntu; OPENCLAWCTL_TEST_HOST_OS_VERSION=20.10; OPENCLAWCTL_TEST_HOST_PM=apt; OPENCLAWCTL_TEST_HOST_NODE_MAJOR=20; OPENCLAWCTL_TEST_HOST_HAS_NPM=0; OPENCLAWCTL_TEST_HOST_CMAKE_VERSION=3.16.3; OPENCLAWCTL_TEST_HOST_HAS_GCC=0; OPENCLAWCTL_TEST_HOST_HAS_GPP=0; OPENCLAWCTL_TEST_HOST_HAS_MAKE=0; OPENCLAWCTL_TEST_HOST_HAS_GIT=0; OPENCLAWCTL_TEST_HOST_HAS_PKG_CONFIG=0; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/hostdeps.sh"; ensure_native_host_dependencies "native-install"' 2>&1 || true)

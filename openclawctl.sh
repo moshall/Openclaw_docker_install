@@ -20,6 +20,7 @@ DEFAULT_ENABLE_APT_CONFIG_PERSIST="2"
 DEFAULT_ENABLE_CACHE_PERSIST="2"
 OFFICIAL_OPENCLAW_REPO_DEFAULT="1panel/openclaw"
 OPENCLAWCTL_TUI_BIN="${OPENCLAWCTL_TUI_BIN:-}"
+OPENCLAWCTL_1PANEL_LAST_OUTPUT=""
 SELECTED_WIZARD=""
 CONFIG_FILE=""
 OPTIONAL_COMPONENTS_FILE="${OPENCLAWCTL_COMPONENTS_FILE:-${SCRIPT_DIR}/config/optional-components.conf}"
@@ -38,6 +39,7 @@ source "${SCRIPT_DIR}/lib/openclawctl/image.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/components.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"
+source "${SCRIPT_DIR}/lib/openclawctl/panel.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/ops.sh"
 source "${SCRIPT_DIR}/lib/openclawctl/wizard.sh"
 
@@ -3039,9 +3041,14 @@ run_native_uninstall_from_config_file() {
 run_1panel_quickstart_script() {
   local mode="${1:-install}"
   local script_url="${OPENCLAWCTL_1PANEL_SCRIPT_URL:-https://resource.fit2cloud.com/1panel/package/quick_start.sh}"
-  local install_cmd=(bash -lc "curl -fsSL '${script_url}' | bash")
-  if ! command -v curl >/dev/null 2>&1; then
-    install_cmd=(bash -lc "wget -qO- '${script_url}' | bash")
+  local install_cmd
+  if [[ -n "${OPENCLAWCTL_1PANEL_INSTALL_CMD:-}" ]]; then
+    install_cmd=(bash -lc "${OPENCLAWCTL_1PANEL_INSTALL_CMD}")
+  else
+    install_cmd=(bash -lc "curl -fsSL '${script_url}' | bash")
+    if ! command -v curl >/dev/null 2>&1; then
+      install_cmd=(bash -lc "wget -qO- '${script_url}' | bash")
+    fi
   fi
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -3053,7 +3060,16 @@ run_1panel_quickstart_script() {
     return 0
   fi
 
-  run_cmd "${install_cmd[@]}"
+  local output_file rc
+  output_file=$(mktemp)
+  set +e
+  "${install_cmd[@]}" 2>&1 | tee "${output_file}"
+  rc=${PIPESTATUS[0]}
+  set -e
+
+  OPENCLAWCTL_1PANEL_LAST_OUTPUT="$(cat "${output_file}")"
+  rm -f "${output_file}"
+  return "${rc}"
 }
 
 panel_install_wizard() {
@@ -3076,7 +3092,22 @@ panel_install_wizard() {
     return 0
   fi
 
-  run_1panel_quickstart_script "install"
+  if ! run_1panel_quickstart_script "install"; then
+    log_error "1Panel 安装命令执行失败"
+    return 1
+  fi
+
+  local parsed panel_url panel_user panel_password info_path
+  parsed=$(extract_1panel_install_summary_fields "${OPENCLAWCTL_1PANEL_LAST_OUTPUT:-}")
+  panel_url="${parsed%%|*}"
+  parsed="${parsed#*|}"
+  panel_user="${parsed%%|*}"
+  panel_password="${parsed#*|}"
+  info_path=$(panel_install_info_path)
+
+  echo
+  render_1panel_install_summary_text "${panel_url}" "${panel_user}" "${panel_password}" "${info_path}"
+  write_1panel_install_archive "${panel_url}" "${panel_user}" "${panel_password}" "${OPENCLAWCTL_1PANEL_LAST_OUTPUT:-}" || true
 }
 
 panel_repair_wizard() {
