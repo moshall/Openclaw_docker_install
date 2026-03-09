@@ -117,6 +117,161 @@ default_data_dir_for_name() {
   printf '%s/%s\n' "$(default_data_root)" "${name}"
 }
 
+instance_core_dir() {
+  local data_dir="$1"
+  printf '%s/.openclaw\n' "${data_dir}"
+}
+
+instance_runtime_dir() {
+  local data_dir="$1"
+  printf '%s/runtime\n' "${data_dir}"
+}
+
+instance_config_dir() {
+  local data_dir="$1"
+  printf '%s/config\n' "${data_dir}"
+}
+
+instance_software_dir() {
+  local data_dir="$1"
+  printf '%s/software\n' "${data_dir}"
+}
+
+layout_profile_path() {
+  local data_dir="$1"
+  printf '%s/layout.profile\n' "$(instance_runtime_dir "${data_dir}")"
+}
+
+save_layout_profile() {
+  local data_dir="$1"
+  local layout_version="${2:-2}"
+  local mode="${3:-structured}"
+  local profile
+  profile=$(layout_profile_path "${data_dir}")
+  run_cmd mkdir -p "$(instance_runtime_dir "${data_dir}")"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "布局档案将保存到: ${profile}"
+    return 0
+  fi
+  cat > "${profile}" <<EOF
+LAYOUT_VERSION=${layout_version}
+MODE=${mode}
+CORE_DIR=.openclaw
+UPDATED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+}
+
+detect_data_layout_version() {
+  local data_dir="$1"
+  local profile core_dir
+  core_dir=$(instance_core_dir "${data_dir}")
+  profile=$(layout_profile_path "${data_dir}")
+
+  if [[ -f "${profile}" ]]; then
+    local version
+    version=$(awk -F '=' '$1=="LAYOUT_VERSION"{print $2}' "${profile}" | tail -n1 | tr -d '[:space:]')
+    if [[ "${version}" == "2" ]]; then
+      printf '2\n'
+      return 0
+    fi
+  fi
+
+  if [[ -f "${core_dir}/openclaw.json" || -d "${core_dir}/backups" || -d "${core_dir}/workspace" ]]; then
+    printf '2\n'
+    return 0
+  fi
+
+  if [[ -f "${data_dir}/openclaw.json" || -d "${data_dir}/backups" || -d "${data_dir}/workspace" ]]; then
+    printf '1\n'
+    return 0
+  fi
+
+  printf '0\n'
+}
+
+openclaw_data_mount_dir() {
+  local data_dir="$1"
+  local layout_version
+  layout_version=$(detect_data_layout_version "${data_dir}")
+  if [[ "${layout_version}" == "1" ]]; then
+    printf '%s\n' "${data_dir}"
+  else
+    printf '%s\n' "$(instance_core_dir "${data_dir}")"
+  fi
+}
+
+openclaw_config_file_path() {
+  local data_dir="$1"
+  local core_cfg legacy_cfg
+  core_cfg="$(instance_core_dir "${data_dir}")/openclaw.json"
+  legacy_cfg="${data_dir}/openclaw.json"
+  if [[ -f "${core_cfg}" ]]; then
+    printf '%s\n' "${core_cfg}"
+  elif [[ -f "${legacy_cfg}" ]]; then
+    printf '%s\n' "${legacy_cfg}"
+  else
+    printf '%s\n' "${core_cfg}"
+  fi
+}
+
+normalize_data_dir_from_mount_source() {
+  local source="$1"
+  local normalized
+  normalized=$(trim_surrounding_spaces "${source}")
+  if [[ "${normalized}" == */.openclaw ]]; then
+    printf '%s\n' "${normalized%/.openclaw}"
+    return 0
+  fi
+  printf '%s\n' "${normalized}"
+}
+
+prepare_structured_layout() {
+  local data_dir="$1"
+  local stage="${2:-prepare}"
+  local core_dir
+  core_dir=$(instance_core_dir "${data_dir}")
+
+  run_cmd mkdir -p "${data_dir}" "$(instance_runtime_dir "${data_dir}")" "$(instance_config_dir "${data_dir}")" "$(instance_software_dir "${data_dir}")"
+
+  local layout_version
+  layout_version=$(detect_data_layout_version "${data_dir}")
+  if [[ "${layout_version}" == "2" ]]; then
+    run_cmd mkdir -p "${core_dir}"
+    save_layout_profile "${data_dir}" "2" "structured"
+    return 0
+  fi
+
+  if [[ "${layout_version}" == "0" ]]; then
+    run_cmd mkdir -p "${core_dir}"
+    save_layout_profile "${data_dir}" "2" "fresh-structured"
+    return 0
+  fi
+
+  log_info "[layout] 检测到旧目录结构，准备迁移到: ${core_dir}"
+  run_cmd mkdir -p "${core_dir}"
+
+  local entry base
+  local old_dotglob old_nullglob
+  old_dotglob=$(shopt -p dotglob || true)
+  old_nullglob=$(shopt -p nullglob || true)
+  shopt -s dotglob nullglob
+  for entry in "${data_dir}"/*; do
+    [[ -e "${entry}" ]] || continue
+    base=$(basename "${entry}")
+    case "${base}" in
+      "."|".."|".openclaw"|"runtime"|"config"|"software")
+        continue
+        ;;
+    esac
+    run_cmd mv "${entry}" "${core_dir}/${base}"
+  done
+  eval "${old_dotglob}"
+  eval "${old_nullglob}"
+
+  save_layout_profile "${data_dir}" "2" "${stage}-migrated-from-legacy"
+  log_info "[layout] 目录结构迁移完成: ${data_dir} -> ${core_dir}"
+}
+
 official_openclaw_repo_path() {
   local repo="${OPENCLAW_OFFICIAL_REPO:-${OFFICIAL_OPENCLAW_REPO_DEFAULT}}"
   repo="${repo#docker.io/}"
@@ -499,18 +654,23 @@ bootstrap_openclaw_config() {
   local gateway_bind="$4"
   local token="$5"
 
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw setup
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.mode local
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.port "${container_port}"
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.bind "${gateway_bind}"
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.mode token
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.token "${token}"
+  local mount_dir
+  mount_dir=$(openclaw_data_mount_dir "${data_dir}")
+
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw setup
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set gateway.mode local
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set gateway.port "${container_port}"
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set gateway.bind "${gateway_bind}"
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.mode token
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set gateway.auth.token "${token}"
 }
 
 run_openclaw_doctor_fix() {
   local image="$1"
   local data_dir="$2"
-  run_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw doctor --fix
+  local mount_dir
+  mount_dir=$(openclaw_data_mount_dir "${data_dir}")
+  run_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw doctor --fix
 }
 
 run_openclaw_config_set_compat() {
@@ -518,15 +678,17 @@ run_openclaw_config_set_compat() {
   local data_dir="$2"
   local key="$3"
   local value="$4"
+  local mount_dir
+  mount_dir=$(openclaw_data_mount_dir "${data_dir}")
 
-  print_cmd docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}"
+  print_cmd docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     return 0
   fi
 
   local output rc
   set +e
-  output=$(docker run --rm --user root -v "${data_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}" 2>&1)
+  output=$(docker run --rm --user root -v "${mount_dir}:/root/.openclaw" "${image}" openclaw config set "${key}" "${value}" 2>&1)
   rc=$?
   set -e
 
@@ -578,6 +740,12 @@ run_gateway_container() {
   local volume_args=()
   local port_args=("-p" "${host_port}:${container_port}")
   local persist_node_modules_mount="1"
+  local core_dir software_dir
+  core_dir=$(instance_core_dir "${data_dir}")
+  software_dir=$(instance_software_dir "${data_dir}")
+
+  run_cmd mkdir -p "${core_dir}" "${software_dir}"
+  volume_args+=("-v" "${software_dir}:/root/.openclaw/software")
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
     run_cmd mkdir -p "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/root-go-bin" "${data_dir}/runtime/root-cargo-bin"
@@ -662,7 +830,7 @@ run_gateway_container() {
     --user root \
     --restart "${DEFAULT_RESTART_POLICY}" \
     "${port_args[@]}" \
-    -v "${data_dir}:/root/.openclaw" \
+    -v "${core_dir}:/root/.openclaw" \
     "${volume_args[@]}" \
     --add-host=host.docker.internal:host-gateway \
     "${image}" \
@@ -720,7 +888,8 @@ compose_collect_volume_mappings() {
   local enable_apt_cfg_persist="$5"
   local enable_cache_persist="$6"
 
-  printf '%s\n' "${data_dir}:/root/.openclaw"
+  printf '%s\n' "$(instance_core_dir "${data_dir}"):/root/.openclaw"
+  printf '%s\n' "$(instance_software_dir "${data_dir}"):/root/.openclaw/software"
 
   if [[ "${enable_bin_persist}" == "1" ]]; then
     printf '%s\n' "${data_dir}/runtime/root-local-bin:/root/.local/bin"
@@ -1075,7 +1244,7 @@ detect_existing_data_dir() {
   local fallback="$2"
 
   if [[ -n "${OPENCLAWCTL_TEST_EXISTING_DATA_DIR:-}" ]]; then
-    printf '%s\n' "${OPENCLAWCTL_TEST_EXISTING_DATA_DIR}"
+    printf '%s\n' "$(normalize_data_dir_from_mount_source "${OPENCLAWCTL_TEST_EXISTING_DATA_DIR}")"
     return
   fi
 
@@ -1096,7 +1265,7 @@ detect_existing_data_dir() {
     [[ -z "${source}" || -z "${destination}" ]] && continue
     if [[ "${destination}" == "/root/.openclaw" ]]; then
       if is_safe_path_text "${source}"; then
-        printf '%s\n' "${source}"
+        printf '%s\n' "$(normalize_data_dir_from_mount_source "${source}")"
         return
       fi
       log_info "检测到 /root/.openclaw 挂载路径包含异常字符，继续尝试其他候选目录"
@@ -1111,7 +1280,7 @@ detect_existing_data_dir() {
     [[ -z "${source}" || -z "${destination}" ]] && continue
     if [[ "${destination}" == *".openclaw"* || "${destination}" == "/data" || "${destination}" == "/config" ]]; then
       if is_safe_path_text "${source}"; then
-        printf '%s\n' "${source}"
+        printf '%s\n' "$(normalize_data_dir_from_mount_source "${source}")"
         return
       fi
     fi
@@ -1126,7 +1295,7 @@ detect_existing_data_dir() {
     [[ "${destination}" == "/root/.local/bin" || "${destination}" == "/root/go/bin" ]] && continue
     if [[ -f "${source}/openclaw.json" || -d "${source}/backups" ]]; then
       if is_safe_path_text "${source}"; then
-        printf '%s\n' "${source}"
+        printf '%s\n' "$(normalize_data_dir_from_mount_source "${source}")"
         return
       fi
     fi
@@ -1265,9 +1434,11 @@ prepare_source_switch_transition() {
   fi
 
   log_info "[source-switch] 检测到版本源切换: ${from_source} -> ${to_source}"
-  if [[ -f "${data_dir}/openclaw.json" ]]; then
-    local backup_file="${data_dir}/openclaw.json.bak.$(date +%Y%m%d%H%M%S)"
-    run_cmd cp "${data_dir}/openclaw.json" "${backup_file}"
+  local cfg_path
+  cfg_path=$(openclaw_config_file_path "${data_dir}")
+  if [[ -f "${cfg_path}" ]]; then
+    local backup_file="${cfg_path}.bak.$(date +%Y%m%d%H%M%S)"
+    run_cmd cp "${cfg_path}" "${backup_file}"
   fi
 
   if [[ "${to_source}" == "official" ]]; then
@@ -2213,8 +2384,10 @@ detect_gateway_bind() {
     fi
   fi
 
-  if [[ -f "${data_dir}/openclaw.json" ]]; then
-    bind=$(grep -Eo '"bind"[[:space:]]*:[[:space:]]*"[^"]+"' "${data_dir}/openclaw.json" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr '[:upper:]' '[:lower:]' || true)
+  local cfg_path
+  cfg_path=$(openclaw_config_file_path "${data_dir}")
+  if [[ -f "${cfg_path}" ]]; then
+    bind=$(grep -Eo '"bind"[[:space:]]*:[[:space:]]*"[^"]+"' "${cfg_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr '[:upper:]' '[:lower:]' || true)
     if [[ "${bind}" == "local" || "${bind}" == "lan" ]]; then
       echo "${bind}"
       return
@@ -2364,7 +2537,8 @@ EOS
 
 detect_token_from_config() {
   local data_dir="$1"
-  local cfg="${data_dir}/openclaw.json"
+  local cfg
+  cfg=$(openclaw_config_file_path "${data_dir}")
   if [[ ! -f "${cfg}" ]]; then
     echo ""
     return
@@ -2431,7 +2605,7 @@ print_human_summary() {
   if [[ -n "${token}" ]]; then
     echo "Token：${token}（请务必保留并妥善保存，是后续登录依据）"
   else
-    echo "Token：沿用原配置（如需查看可在 ${data_dir}/openclaw.json 中确认）"
+    echo "Token：沿用原配置（如需查看可在 $(openclaw_config_file_path "${data_dir}") 中确认）"
   fi
   echo "访问地址：${access_url}"
   echo

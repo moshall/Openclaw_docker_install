@@ -271,7 +271,8 @@ assert_contains "${wizard_compose_export_output}" "image: docker.io/1panel/openc
 assert_contains "${wizard_compose_export_output}" "- \"4555:18789\""
 assert_contains "${wizard_compose_export_output}" "- \"5001:5001\""
 assert_contains "${wizard_compose_export_output}" "- \"6000:6000/udp\""
-assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg:/root/.openclaw\""
+assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/.openclaw:/root/.openclaw\""
+assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/software:/root/.openclaw/software\""
 assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/runtime/root-local-bin:/root/.local/bin\""
 assert_contains "${wizard_compose_export_output}" "- \"/opt/1panel/apps/openclaw_compose_cfg/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d\""
 assert_not_contains "${wizard_compose_export_output}" "/runtime/root-local-lib:/root/.local/lib"
@@ -442,9 +443,11 @@ assert_contains "${install_output}" "5) 🧩 功能加强:"
 assert_contains "${install_output}" "6) 🔐 鉴权方式管理:"
 assert_not_contains "${install_output}" "--- 📦 版本镜像选择 ---"
 assert_contains "${install_output}" "ghcr.io/1186258278/openclaw-zh:latest"
-assert_contains "${install_output}" "docker run --rm --user root -v /opt/1panel/apps/openclaw_demo:/root/.openclaw"
+assert_contains "${install_output}" "docker run --rm --user root -v /opt/1panel/apps/openclaw_demo/.openclaw:/root/.openclaw"
 assert_contains "${install_output}" "openclaw config set gateway.bind lan"
 assert_contains "${install_output}" "docker run -d --name openclaw_demo"
+assert_contains "${install_output}" "-v /opt/1panel/apps/openclaw_demo/.openclaw:/root/.openclaw"
+assert_contains "${install_output}" "-v /opt/1panel/apps/openclaw_demo/software:/root/.openclaw/software"
 assert_contains "${install_output}" "docker exec openclaw_demo sh -lc <runtime-path-repair-script>"
 assert_contains "${install_output}" "docker exec openclaw_demo sh -lc <clawpanel-install-script>"
 assert_contains "${install_output}" "开始安装/升级 ClawPanel（npm: @milkkey/clawpanel）"
@@ -483,7 +486,8 @@ assert_contains "${upgrade_output}" "docker cp openclaw_demo:/root/.config/. /op
 assert_contains "${upgrade_output}" "docker cp openclaw_demo:/root/.docker/. /opt/1panel/apps/openclaw_demo/runtime/root-docker/"
 assert_contains "${upgrade_output}" "docker exec openclaw_demo sh -lc <apt-manual-snapshot-script>"
 assert_contains "${upgrade_output}" "docker rm -f openclaw_demo"
-assert_contains "${upgrade_output}" "-v /opt/1panel/apps/openclaw_demo:/root/.openclaw"
+assert_contains "${upgrade_output}" "-v /opt/1panel/apps/openclaw_demo/.openclaw:/root/.openclaw"
+assert_contains "${upgrade_output}" "-v /opt/1panel/apps/openclaw_demo/software:/root/.openclaw/software"
 assert_contains "${upgrade_output}" "/runtime/usr-local-go:/usr/local/go"
 assert_contains "${upgrade_output}" "/runtime/usr-local-lib-node-modules:/usr/local/lib/node_modules"
 assert_contains "${upgrade_output}" "/runtime/root-local-lib:/root/.local/lib"
@@ -878,6 +882,35 @@ EOF
 persist_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard persist --config-file "${persist_cfg}")
 assert_contains "${persist_output}" "docker rm -f openclaw_persist_cfg"
 assert_contains "${persist_output}" "/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d"
+
+# 21b) upgrade should migrate legacy root layout into structured .openclaw before recreate
+legacy_layout_dir="${tmpdir}/openclaw_legacy_layout"
+mkdir -p "${legacy_layout_dir}/runtime"
+cat > "${legacy_layout_dir}/openclaw.json" <<'EOF'
+{"gateway":{"bind":"lan"}}
+EOF
+cat > "${legacy_layout_dir}/legacy.note" <<'EOF'
+legacy-layout
+EOF
+legacy_migrate_cfg="${tmpdir}/upgrade-legacy-migrate.cfg"
+cat > "${legacy_migrate_cfg}" <<EOF
+NAME=openclaw_legacy_layout
+IMAGE=docker.io/1panel/openclaw:latest
+HOST_PORT=4113
+CONTAINER_PORT=18789
+DATA_DIR=${legacy_layout_dir}
+BIN_PERSIST_CHOICE=2
+ENV_PERSIST_CHOICE=2
+APT_CFG_PERSIST_CHOICE=2
+CACHE_PERSIST_CHOICE=2
+EASY_CHOICE=2
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+legacy_migrate_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${legacy_migrate_cfg}")
+assert_contains "${legacy_migrate_output}" "[layout] 检测到旧目录结构，准备迁移到: ${legacy_layout_dir}/.openclaw"
+assert_contains "${legacy_migrate_output}" "mv ${legacy_layout_dir}/openclaw.json ${legacy_layout_dir}/.openclaw/openclaw.json"
 
 # 22) deployment info wizard should print deterministic deployment-info path
 info_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard info)

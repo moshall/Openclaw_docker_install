@@ -40,6 +40,7 @@ execute_install_plan() {
   fi
 
   run_cmd mkdir -p "${data_dir}"
+  prepare_structured_layout "${data_dir}" "install"
   if ! image=$(resolve_official_tag_with_fallback "install" "${image}"); then
     return 1
   fi
@@ -204,6 +205,7 @@ execute_upgrade_plan() {
   fi
 
   remove_container_if_exists "${name}"
+  prepare_structured_layout "${data_dir}" "upgrade"
   if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
     if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
       log_error "APT 源目录初始化失败，已中止升级以避免空源配置"
@@ -357,6 +359,7 @@ execute_rebuild_plan() {
   fi
 
   remove_container_if_exists "${name}"
+  prepare_structured_layout "${data_dir}" "rebuild"
   if [[ "${apt_cfg_persist_choice}" == "1" ]]; then
     if ! run_optional_step "APT 源目录初始化" ensure_apt_config_seeded_from_image "${image}" "${data_dir}"; then
       log_error "APT 源目录初始化失败，已中止重建以避免空源配置"
