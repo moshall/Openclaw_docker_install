@@ -298,9 +298,132 @@ software_profile_path() {
   echo "${data_dir}/runtime/software.profile"
 }
 
+software_manifest_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/software-manifest.json"
+}
+
 skill_profile_path() {
   local data_dir="$1"
   echo "${data_dir}/runtime/skills.profile"
+}
+
+config_manifest_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/config-manifest.json"
+}
+
+choice_to_json_bool() {
+  local choice="${1:-2}"
+  if [[ "${choice}" == "1" ]]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
+software_install_method_from_kind() {
+  local kind="$1"
+  case "${kind}" in
+    npm_package|clawpanel|easyclaw|claudecodeui) printf 'npm\n' ;;
+    gh_binary) printf 'gh_release\n' ;;
+    notebooklm) printf 'pip\n' ;;
+    guidance) printf 'guidance\n' ;;
+    *) printf '%s\n' "${kind}" ;;
+  esac
+}
+
+json_array_from_tokens() {
+  local out=""
+  local token
+  for token in "$@"; do
+    [[ -n "${token}" ]] || continue
+    if [[ -n "${out}" ]]; then
+      out="${out}, "
+    fi
+    out="${out}\"$(json_escape "${token}")\""
+  done
+  printf '[%s]' "${out}"
+}
+
+extract_manifest_software_ids() {
+  local manifest="$1"
+  [[ -f "${manifest}" ]] || {
+    printf '\n'
+    return 0
+  }
+  grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' "${manifest}" 2>/dev/null \
+    | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
+    | tr '\n' ' '
+}
+
+save_software_manifest() {
+  local data_dir="$1"
+  shift
+  local software_set
+  software_set=$(normalize_software_set "$*")
+  local manifest
+  manifest=$(software_manifest_path "${data_dir}")
+
+  run_cmd mkdir -p "${data_dir}/runtime"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "软件清单(manifest)将保存到: ${manifest}"
+    log_info "软件清单(manifest)内容: ${software_set:-<empty>}"
+    return 0
+  fi
+
+  local item_lines=""
+  local token
+  for token in ${software_set}; do
+    local label kind arg1 arg2 deps method
+    label=$(catalog_field_for_id "software" "${token}" "label")
+    kind=$(catalog_field_for_id "software" "${token}" "kind")
+    arg1=$(catalog_field_for_id "software" "${token}" "arg1")
+    arg2=$(catalog_field_for_id "software" "${token}" "arg2")
+    deps=$(catalog_field_for_id "software" "${token}" "deps")
+    method=$(software_install_method_from_kind "${kind}")
+    deps="${deps//,/ }"
+    deps=$(echo "${deps}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+    [[ "${deps}" == "none" ]] && deps=""
+
+    local dep_array
+    if [[ -n "${deps}" ]]; then
+      # shellcheck disable=SC2086
+      dep_array=$(json_array_from_tokens ${deps})
+    else
+      dep_array='[]'
+    fi
+
+    local record
+    record=$(cat <<EOF
+    {
+      "id": "$(json_escape "${token}")",
+      "label": "$(json_escape "${label}")",
+      "kind": "$(json_escape "${kind}")",
+      "install_method": "$(json_escape "${method}")",
+      "package": "$(json_escape "${arg1}")",
+      "binary": "$(json_escape "${arg2}")",
+      "deps": ${dep_array},
+      "selected": true
+    }
+EOF
+)
+    if [[ -n "${item_lines}" ]]; then
+      item_lines="${item_lines},\n${record}"
+    else
+      item_lines="${record}"
+    fi
+  done
+
+  cat > "${manifest}" <<EOF
+{
+  "schema_version": 1,
+  "generated_at_utc": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "software": [
+${item_lines}
+  ]
+}
+EOF
 }
 
 load_software_profile() {
@@ -309,6 +432,13 @@ load_software_profile() {
   profile=$(software_profile_path "${data_dir}")
   if [[ -f "${profile}" ]]; then
     normalize_software_set "$(tr '\n' ' ' < "${profile}")"
+    return 0
+  fi
+
+  local manifest
+  manifest=$(software_manifest_path "${data_dir}")
+  if [[ -f "${manifest}" ]]; then
+    normalize_software_set "$(extract_manifest_software_ids "${manifest}")"
   else
     echo ""
   fi
@@ -325,9 +455,15 @@ save_software_profile() {
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     log_info "软件档案将保存到: ${profile}"
     log_info "软件档案内容: ${software:-<empty>}"
-    return
+    save_software_manifest "${data_dir}" "${software}"
+    return 0
   fi
-  printf '%s\n' ${software} > "${profile}"
+  if [[ -n "${software}" ]]; then
+    printf '%s\n' ${software} > "${profile}"
+  else
+    : > "${profile}"
+  fi
+  save_software_manifest "${data_dir}" "${software}"
 }
 
 load_skill_profile() {
@@ -354,7 +490,86 @@ save_skill_profile() {
     log_info "Skill 档案内容: ${skills:-<empty>}"
     return
   fi
-  printf '%s\n' ${skills} > "${profile}"
+  if [[ -n "${skills}" ]]; then
+    printf '%s\n' ${skills} > "${profile}"
+  else
+    : > "${profile}"
+  fi
+}
+
+save_config_manifest() {
+  local data_dir="$1"
+  local mode="${2:-docker-install}"
+  local bin_persist_choice="${3:-2}"
+  local env_persist_choice="${4:-2}"
+  local apt_cfg_persist_choice="${5:-2}"
+  local cache_persist_choice="${6:-2}"
+  local software_set
+  software_set=$(normalize_software_set "${7:-}")
+  local skill_set
+  skill_set=$(normalize_skill_set "${8:-}")
+
+  local manifest
+  manifest=$(config_manifest_path "${data_dir}")
+  run_cmd mkdir -p "${data_dir}/runtime"
+
+  local -a software_tokens=()
+  local -a skill_tokens=()
+  local token
+  for token in ${software_set}; do
+    software_tokens+=("${token}")
+  done
+  for token in ${skill_set}; do
+    skill_tokens+=("${token}")
+  done
+
+  local software_array
+  software_array=$(json_array_from_tokens "${software_tokens[@]}")
+  local skill_array
+  skill_array=$(json_array_from_tokens "${skill_tokens[@]}")
+  local bin_bool env_bool apt_bool cache_bool
+  bin_bool=$(choice_to_json_bool "${bin_persist_choice}")
+  env_bool=$(choice_to_json_bool "${env_persist_choice}")
+  apt_bool=$(choice_to_json_bool "${apt_cfg_persist_choice}")
+  cache_bool=$(choice_to_json_bool "${cache_persist_choice}")
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "配置清单(config-manifest)将保存到: ${manifest}"
+    log_info "配置清单(config-manifest)模式: ${mode}"
+    return 0
+  fi
+
+  cat > "${manifest}" <<EOF
+{
+  "schema_version": 1,
+  "generated_at_utc": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "mode": "$(json_escape "${mode}")",
+  "data_dir": "$(json_escape "${data_dir}")",
+  "manifests": {
+    "software_profile": "runtime/software.profile",
+    "software_manifest": "runtime/software-manifest.json",
+    "skill_profile": "runtime/skills.profile",
+    "persistence_profile": "runtime/persistence.profile",
+    "image_lock_profile": "runtime/image-lock.profile"
+  },
+  "persistence": {
+    "bin": ${bin_bool},
+    "env": ${env_bool},
+    "apt_config": ${apt_bool},
+    "cache": ${cache_bool}
+  },
+  "selected": {
+    "software": ${software_array},
+    "skills": ${skill_array}
+  },
+  "config_paths": [
+    {"id":"workspace-skills","path":"workspace/skills","purpose":"skills"},
+    {"id":"software-root","path":"software","purpose":"software_home"},
+    {"id":"runtime-path-decls","path":"runtime/path-decls/openclaw-runtime-path.sh","purpose":"runtime_path_declarations"},
+    {"id":"runtime-path-shims","path":"runtime/path-shims","purpose":"runtime_path_shims"}
+  ]
+}
+EOF
 }
 
 run_optional_software_script() {

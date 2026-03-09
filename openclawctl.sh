@@ -14,7 +14,7 @@ CLAUDECODEUI_RESERVED_CONTAINER_PORT_3="7203"
 CLAUDECODEUI_NPM_PACKAGE="@siteboon/claude-code-ui"
 TASKMASTER_NPM_PACKAGE="task-master-ai"
 DEFAULT_DEP_SET="npm uv"
-DEFAULT_ENABLE_BIN_PERSIST="1"
+DEFAULT_ENABLE_BIN_PERSIST="2"
 DEFAULT_ENABLE_ENV_PERSIST="2"
 DEFAULT_ENABLE_APT_CONFIG_PERSIST="2"
 DEFAULT_ENABLE_CACHE_PERSIST="2"
@@ -2710,6 +2710,7 @@ execute_native_install_plan() {
   fi
   save_software_profile "${data_dir}" "${software_set}"
   save_skill_profile "${data_dir}" "${skill_set}"
+  save_config_manifest "${data_dir}" "${native_action}" "2" "2" "2" "2" "${software_set}" "${skill_set}"
 
   local native_status="success"
   write_last_report "${native_action}" "${native_status}" "${app_name}" "${data_dir}" "${package_ref}" "" "" "" "" ""

@@ -68,6 +68,7 @@ execute_install_plan() {
   save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
   save_software_profile "${data_dir}" "${software_set}"
   save_skill_profile "${data_dir}" "${skill_set}"
+  save_config_manifest "${data_dir}" "docker-install" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${software_set}" "${skill_set}"
   if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
     install_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
   fi
@@ -141,10 +142,13 @@ execute_upgrade_plan() {
   local upgrade_dep_set="${12}"
   local extra_ports="${13:-}"
   local software_set
+  local skill_set
   local requested_image="${image}"
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(load_skill_profile "${data_dir}")
+  skill_set=$(normalize_skill_set "${skill_set}")
   if [[ -n "${software_set}" ]]; then
     log_info "检测到已保存的软件档案，升级后将自动保活: $(software_set_summary "${software_set}")"
     upgrade_dep_set=$(ensure_dep_set_for_software "${upgrade_dep_set}" "${software_set}")
@@ -215,6 +219,8 @@ execute_upgrade_plan() {
   fi
   run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
   save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_software_manifest "${data_dir}" "${software_set}"
+  save_config_manifest "${data_dir}" "docker-upgrade" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${software_set}" "${skill_set}"
   if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
     upgrade_nonfatal_issues+=("运行时 PATH/命令入口修正失败")
   fi
@@ -292,10 +298,13 @@ execute_rebuild_plan() {
   local rebuild_dep_set="${11}"
   local extra_ports="${12:-}"
   local software_set
+  local skill_set
   local requested_image="${image}"
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
+  skill_set=$(load_skill_profile "${data_dir}")
+  skill_set=$(normalize_skill_set "${skill_set}")
   if [[ -n "${software_set}" ]]; then
     log_info "检测到已保存的软件档案，重建后将自动保活: $(software_set_summary "${software_set}")"
     rebuild_dep_set=$(ensure_dep_set_for_software "${rebuild_dep_set}" "${software_set}")
@@ -364,6 +373,8 @@ execute_rebuild_plan() {
 
   run_gateway_container "${name}" "${image}" "${host_port}" "${container_port}" "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${extra_ports}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
   save_persistence_profile "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}"
+  save_software_manifest "${data_dir}" "${software_set}"
+  save_config_manifest "${data_dir}" "docker-rebuild" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${software_set}" "${skill_set}"
 
   if ! run_optional_step "运行时 PATH/命令入口修正" repair_runtime_command_paths "${name}"; then
     rebuild_nonfatal_issues+=("运行时 PATH/命令入口修正失败")

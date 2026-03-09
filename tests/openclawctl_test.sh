@@ -83,6 +83,33 @@ assert_contains "${persist_clawpanel_detect_output}" "enabled"
 components_catalog_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; optional_software_label "clawpanel"' 2>&1 || true)
 assert_contains "${components_catalog_output}" "ClawPanel"
 
+# 0f2) components helpers should persist structured software manifest for rebuild/reinstall
+components_manifest_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; save_software_profile "${data_dir}" "clawpanel gh"; cat "${data_dir}/runtime/software-manifest.json"' 2>&1 || true)
+assert_contains "${components_manifest_output}" "\"id\": \"clawpanel\""
+assert_contains "${components_manifest_output}" "\"install_method\": \"npm\""
+assert_contains "${components_manifest_output}" "\"package\": \"@milkkey/clawpanel\""
+
+# 0f3) components helpers should load software profile from manifest when legacy profile is absent
+components_manifest_load_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/runtime"; cat > "${data_dir}/runtime/software-manifest.json" <<'"'"'EOF'"'"'
+{
+  "schema_version": 1,
+  "software": [
+    {"id":"clawpanel"},
+    {"id":"obsidian"}
+  ]
+}
+EOF
+DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; load_software_profile "${data_dir}"' 2>&1 || true)
+assert_contains "${components_manifest_load_output}" "clawpanel obsidian"
+
+# 0f4) components helpers should persist config manifest as rebuild/install baseline
+components_config_manifest_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; save_config_manifest "${data_dir}" "docker-install" "2" "2" "2" "2" "clawpanel gh" "obsidian-skills"; cat "${data_dir}/runtime/config-manifest.json"' 2>&1 || true)
+assert_contains "${components_config_manifest_output}" "\"mode\": \"docker-install\""
+assert_contains "${components_config_manifest_output}" "\"bin\": false"
+assert_contains "${components_config_manifest_output}" "\"software_manifest\": \"runtime/software-manifest.json\""
+assert_contains "${components_config_manifest_output}" "\"clawpanel\""
+assert_contains "${components_config_manifest_output}" "\"obsidian-skills\""
+
 # 0g) deps helpers should expose runtime dependency checker workflow
 deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=1; DEFAULT_DEP_SET="npm uv"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; manage_container_runtime_deps "openclaw_deps_test" "check" "npm uv go"' 2>&1 || true)
 assert_contains "${deps_manage_output}" "开始检测容器依赖: npm uv go"
@@ -149,6 +176,10 @@ assert_contains "${launcher_tui_output}" "OpenClaw 部署助手"
 assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功能"
 assert_not_contains "${launcher_tui_output}" "FAKE_TUI:"
 assert_not_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
+
+# 1b) install wizard should default runtime persistence groups to disabled
+install_defaults_output=$(printf '2\n1\nq\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${install_defaults_output}" "bin=否 | env=否 | APT源Key=否 | 缓存=否"
 
 # 1a) docker menu should use grouped structure
 docker_menu_output=$(printf '2\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
