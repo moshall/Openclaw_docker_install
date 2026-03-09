@@ -10,7 +10,7 @@ tmp_quickstart_dir=""
 
 log_info() {
   if [[ "${OPENCLAWCTL_QUICKSTART_QUIET:-0}" != "1" ]]; then
-    printf '[quick-start] %s\n' "$*"
+    printf '[quick-start] %s\n' "$*" >&2
   fi
 }
 
