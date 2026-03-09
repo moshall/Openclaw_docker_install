@@ -50,6 +50,22 @@ assert_contains "$(cat "${quick_start_local_stdout}")" "FAKE_OPENCLAWCTL_ARGS:--
 assert_not_contains "$(cat "${quick_start_local_stdout}")" "[quick-start]"
 assert_contains "$(cat "${quick_start_local_stderr}")" "[quick-start] 启动 OpenClaw 菜单"
 
+archive_parent="${tmpdir}/archive-root"
+archive_repo="${archive_parent}/Openclaw_docker_install-test"
+archive_file="${tmpdir}/quick-start-test.tar.gz"
+mkdir -p "${archive_repo}/lib/openclawctl"
+cp "${fake_repo}/openclawctl.sh" "${archive_repo}/openclawctl.sh"
+tar -czf "${archive_file}" -C "${archive_parent}" "Openclaw_docker_install-test"
+
+set +e
+quick_start_remote_archive_output=$(OPENCLAWCTL_QUICKSTART_ARCHIVE_URLS="file://${archive_file}" OPENCLAWCTL_QUICKSTART_QUIET=1 bash "${QUICK_START}" --dry-run --wizard info 2>&1)
+quick_start_remote_archive_status=$?
+set -e
+if [[ "${quick_start_remote_archive_status}" -ne 0 ]]; then
+  fail "expected quick_start remote-archive mode to run successfully"
+fi
+assert_contains "${quick_start_remote_archive_output}" "FAKE_OPENCLAWCTL_ARGS:--dry-run --wizard info"
+
 set +e
 quick_start_missing_source_output=$(OPENCLAWCTL_QUICKSTART_SOURCE_DIR="${tmpdir}/not-found" OPENCLAWCTL_QUICKSTART_QUIET=1 bash "${QUICK_START}" 2>&1)
 quick_start_missing_source_status=$?

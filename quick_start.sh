@@ -5,8 +5,10 @@ OPENCLAWCTL_REPO="${OPENCLAWCTL_REPO:-moshall/Openclaw_docker_install}"
 OPENCLAWCTL_REF="${OPENCLAWCTL_REF:-main}"
 OPENCLAWCTL_ENTRY_SCRIPT="${OPENCLAWCTL_ENTRY_SCRIPT:-openclawctl.sh}"
 OPENCLAWCTL_QUICKSTART_SOURCE_DIR="${OPENCLAWCTL_QUICKSTART_SOURCE_DIR:-}"
+OPENCLAWCTL_QUICKSTART_ARCHIVE_URLS="${OPENCLAWCTL_QUICKSTART_ARCHIVE_URLS:-}"
 
 tmp_quickstart_dir=""
+RESOLVED_SOURCE_DIR=""
 
 log_info() {
   if [[ "${OPENCLAWCTL_QUICKSTART_QUIET:-0}" != "1" ]]; then
@@ -32,11 +34,11 @@ download_url() {
   local url="$1"
   local output_file="$2"
   if has_cmd curl; then
-    curl -fsSL "${url}" -o "${output_file}"
+    curl -fsSL "${url}" -o "${output_file}" 2>/dev/null
     return $?
   fi
   if has_cmd wget; then
-    wget -qO "${output_file}" "${url}"
+    wget -qO "${output_file}" "${url}" 2>/dev/null
     return $?
   fi
   return 1
@@ -56,11 +58,16 @@ resolve_remote_source_dir() {
   local extracted_root="${tmp_quickstart_dir}/extract"
   mkdir -p "${extracted_root}"
 
-  local -a candidate_urls=(
-    "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/refs/heads/${OPENCLAWCTL_REF}"
-    "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/refs/tags/${OPENCLAWCTL_REF}"
-    "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/${OPENCLAWCTL_REF}"
-  )
+  local -a candidate_urls=()
+  if [[ -n "${OPENCLAWCTL_QUICKSTART_ARCHIVE_URLS}" ]]; then
+    read -r -a candidate_urls <<<"${OPENCLAWCTL_QUICKSTART_ARCHIVE_URLS}"
+  else
+    candidate_urls=(
+      "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/refs/heads/${OPENCLAWCTL_REF}"
+      "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/refs/tags/${OPENCLAWCTL_REF}"
+      "https://codeload.github.com/${OPENCLAWCTL_REPO}/tar.gz/${OPENCLAWCTL_REF}"
+    )
+  fi
 
   local url
   for url in "${candidate_urls[@]}"; do
@@ -69,7 +76,7 @@ resolve_remote_source_dir() {
       local source_dir
       source_dir=$(detect_source_dir_from_archive "${archive_file}" "${extracted_root}")
       if [[ -n "${source_dir}" && -d "${source_dir}" ]]; then
-        printf '%s\n' "${source_dir}"
+        RESOLVED_SOURCE_DIR="${source_dir}"
         return 0
       fi
     fi
@@ -86,7 +93,7 @@ resolve_source_dir() {
       log_error "指定的本地源码目录不存在: ${OPENCLAWCTL_QUICKSTART_SOURCE_DIR}"
       return 1
     fi
-    printf '%s\n' "${OPENCLAWCTL_QUICKSTART_SOURCE_DIR}"
+    RESOLVED_SOURCE_DIR="${OPENCLAWCTL_QUICKSTART_SOURCE_DIR}"
     return 0
   fi
 
@@ -107,8 +114,8 @@ validate_source_layout() {
 }
 
 main() {
-  local source_dir
-  source_dir=$(resolve_source_dir) || exit 1
+  resolve_source_dir || exit 1
+  local source_dir="${RESOLVED_SOURCE_DIR}"
   validate_source_layout "${source_dir}" || exit 1
 
   chmod +x "${source_dir}/${OPENCLAWCTL_ENTRY_SCRIPT}" >/dev/null 2>&1 || true
