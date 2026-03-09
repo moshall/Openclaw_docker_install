@@ -354,7 +354,7 @@ is_interactive_session() {
 }
 
 enhanced_tui_enabled() {
-  [[ "${OPENCLAWCTL_ENHANCED_TUI:-0}" == "1" ]]
+  return 1
 }
 
 enforce_strict_noninteractive_mode() {
@@ -453,24 +453,7 @@ build_tui_binary_if_possible() {
 }
 
 maybe_exec_tui() {
-  if [[ "${OPENCLAWCTL_FORCE_SHELL:-0}" == "1" || "${OPENCLAWCTL_TUI_ACTIVE:-0}" == "1" ]]; then
-    return 1
-  fi
-  if ! enhanced_tui_enabled; then
-    return 1
-  fi
-  if ! is_interactive_session; then
-    return 1
-  fi
-
-  local tui_bin
-  if ! tui_bin=$(resolve_tui_binary); then
-    log_info "未检测到可用增强 TUI 二进制（可能缺少 Go），已回退到 Shell 菜单。"
-    return 1
-  fi
-
-  clear_interactive_screen
-  OPENCLAWCTL_TUI_ACTIVE=1 exec "${tui_bin}" --shell-script "$0" "$@"
+  return 1
 }
 
 choice_to_yes_no() {

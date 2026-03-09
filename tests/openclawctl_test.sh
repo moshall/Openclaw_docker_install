@@ -107,7 +107,7 @@ rm -rf "${aptfix_tmpdir}"
 assert_contains "$(cat "${SCRIPT_PATH}")" 'is_tui_binary_up_to_date() {'
 assert_contains "$(cat "${SCRIPT_PATH}")" 'find "${root_dir}/cmd" "${root_dir}/internal" -type f -name '\''*.go'\'' -newer "${output_bin}"'
 
-# 1) launcher should default to shell menu; enhanced TUI must be explicitly enabled
+# 1) launcher should always use shell menu; enhanced TUI flag is ignored
 tmpdir=$(mktemp -d)
 trap 'rm -rf "${tmpdir}"' EXIT
 fake_tui="${tmpdir}/fake-openclawctl-tui"
@@ -125,11 +125,11 @@ assert_contains "${launcher_shell_output}" "远程 VPS 1Panel 版 Docker"
 assert_not_contains "${launcher_shell_output}" "FAKE_TUI:"
 assert_not_contains "${launcher_shell_output}" "正在构建TUI菜单中，即将呈现"
 
-launcher_tui_output=$(OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_ENHANCED_TUI=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run 2>&1 || true)
-assert_contains "${launcher_tui_output}" "FAKE_TUI:"
+launcher_tui_output=$(printf '0\n' | OPENCLAWCTL_ASSUME_TTY=1 OPENCLAWCTL_ENHANCED_TUI=1 OPENCLAWCTL_TUI_BIN="${fake_tui}" bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${launcher_tui_output}" "OpenClaw 部署助手"
 assert_contains "${launcher_tui_output}" "系统环境检测中用于匹配功能"
-assert_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
-assert_contains "${launcher_tui_output}" $'\033[H\033[2J'
+assert_not_contains "${launcher_tui_output}" "FAKE_TUI:"
+assert_not_contains "${launcher_tui_output}" "正在构建TUI菜单中，即将呈现"
 
 # 1a) docker menu should use grouped structure
 docker_menu_output=$(printf '2\n0\n0\n' | OPENCLAWCTL_ASSUME_TTY=1 bash "${SCRIPT_PATH}" --dry-run 2>&1)
