@@ -19,6 +19,7 @@
 ```text
 .
 ├── openclawctl.sh              # 主脚本（真实执行入口）
+├── quick_start.sh              # 远程一键入口（curl | bash）
 ├── lib/
 │   └── openclawctl/            # openclawctl 模块脚本（按职责拆分）
 │       ├── bootstrap.sh
@@ -70,6 +71,26 @@ bash tests/installer_v07_1panel_test.sh
 
 ```bash
 bash ./openclawctl.sh
+```
+
+## 远程一键入口（GitHub）
+
+可以直接使用 GitHub Raw 链接：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/moshall/Openclaw_docker_install/main/quick_start.sh)"
+```
+
+是的，域名可以直接使用 GitHub（`raw.githubusercontent.com` + `codeload.github.com`）。
+
+补充：
+
+- 指定分支/标签：`OPENCLAWCTL_REF=v0.7.0`
+- 私有/镜像源码目录：`OPENCLAWCTL_QUICKSTART_SOURCE_DIR=/path/to/repo`
+- 透传参数示例：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/moshall/Openclaw_docker_install/main/quick_start.sh)" -- --dry-run
 ```
 
 说明：
@@ -196,6 +217,7 @@ bash ./tests/installer_v07_lifecycle_test.sh
 bash ./tests/installer_v07_report_test.sh
 bash ./tests/installer_v07_1panel_test.sh
 bash ./tests/installer_v07_docs_test.sh
+bash ./tests/quick_start_test.sh
 ```
 
 ## 已验证场景
