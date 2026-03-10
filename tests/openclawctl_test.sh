@@ -894,6 +894,22 @@ persist_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard persist --config-file 
 assert_contains "${persist_output}" "docker rm -f openclaw_persist_cfg"
 assert_contains "${persist_output}" "/runtime/etc-apt-sources-list-d:/etc/apt/sources.list.d"
 
+# 21c) interactive runtime persist append should support discover report confirm mode
+persist_discover_root="${tmpdir}/persist-discover-root"
+persist_discover_data_dir="${persist_discover_root}/openclaw_persist_discover"
+mkdir -p "${persist_discover_data_dir}/software/bin"
+cat > "${persist_discover_data_dir}/software/bin/notebooklm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${persist_discover_data_dir}/software/bin/notebooklm"
+persist_discover_input=$'2\n3\n2\nopenclaw_persist_discover\n2\ny\n0\n'
+persist_discover_output=$(printf "%s" "${persist_discover_input}" | OPENCLAWCTL_DATA_ROOT="${persist_discover_root}" bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${persist_discover_output}" "软件发现候选（扫描报告）"
+assert_contains "${persist_discover_output}" "发现候选软件后处理方式"
+assert_contains "${persist_discover_output}" "本次已忽略候选软件，不纳入保活清单"
+assert_not_contains "${persist_discover_output}" "docker exec openclaw_persist_discover bash -lc <software-notebooklm-install-script>"
+
 # 21b) upgrade should migrate legacy root layout into structured .openclaw before recreate
 legacy_layout_dir="${tmpdir}/openclaw_legacy_layout"
 mkdir -p "${legacy_layout_dir}/runtime"
@@ -1140,6 +1156,21 @@ assert_contains "${wizard_upgrade_discover_ignore_output}" "检测到未登记�
 assert_contains "${wizard_upgrade_discover_ignore_output}" "本次已忽略候选软件，不纳入保活清单"
 assert_not_contains "${wizard_upgrade_discover_ignore_output}" "开始检测容器依赖: npm uv python3"
 assert_not_contains "${wizard_upgrade_discover_ignore_output}" "docker exec openclaw_upgrade_discover_ignore bash -lc <software-notebooklm-install-script>"
+
+# 28d) upgrade discovery summary should display software candidate report with source paths
+upgrade_summary_root="${tmpdir}/upgrade-summary-root"
+upgrade_summary_data_dir="${upgrade_summary_root}/openclaw_upgrade_summary"
+mkdir -p "${upgrade_summary_data_dir}/software/bin"
+cat > "${upgrade_summary_data_dir}/software/bin/notebooklm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${upgrade_summary_data_dir}/software/bin/notebooklm"
+upgrade_summary_input=$'2\n2\nopenclaw_upgrade_summary\n5\n\nq\n0\n'
+upgrade_summary_output=$(printf "%s" "${upgrade_summary_input}" | OPENCLAWCTL_DATA_ROOT="${upgrade_summary_root}" bash "${SCRIPT_PATH}" --dry-run 2>&1)
+assert_contains "${upgrade_summary_output}" "软件发现候选（扫描报告）"
+assert_contains "${upgrade_summary_output}" "NotebookLM CLI"
+assert_contains "${upgrade_summary_output}" "/software/bin/notebooklm"
 
 # 29) persist should auto avoid clawpanel web host-port conflicts
 persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"

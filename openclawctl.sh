@@ -1817,6 +1817,18 @@ print_upgrade_discovery_summary() {
   else
     echo "建议: 当前状态无明显风险，可继续升级。"
   fi
+
+  local discover_current_set discover_report discover_report_text
+  discover_current_set=$(load_software_profile "${data_dir}")
+  discover_current_set=$(normalize_software_set "${discover_current_set}")
+  discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${discover_current_set}")
+  if [[ -n "${discover_report}" ]]; then
+    echo "软件发现候选（扫描报告）:"
+    discover_report_text=$(render_software_discover_report "${discover_report}")
+    printf '%s\n' "${discover_report_text}"
+  else
+    echo "软件发现候选（扫描报告）: 未发现"
+  fi
 }
 
 install_docker_if_missing() {
@@ -3940,6 +3952,8 @@ persist_append_wizard() {
   container_port="${port_pair##*,}"
   local extra_ports
   extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
+  local discover_mode_choice="1"
+  local discover_mode="apply"
 
   printf '\n--- 执行清单（确认前） ---\n'
   echo "容器名: ${name}"
@@ -3948,6 +3962,24 @@ persist_append_wizard() {
   echo "端口映射: ${host_port}:${container_port}"
   echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
   echo "策略: 将通过安全重建追加 bin/env/APT/cache 全量持久化"
+
+  local discover_current_set discover_report discover_report_text
+  discover_current_set=$(load_software_profile "${data_dir}")
+  discover_current_set=$(normalize_software_set "${discover_current_set}")
+  discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${discover_current_set}")
+  if [[ -n "${discover_report}" ]]; then
+    echo "--- 软件发现候选（扫描报告） ---"
+    discover_report_text=$(render_software_discover_report "${discover_report}")
+    printf '%s\n' "${discover_report_text}"
+    echo "发现候选软件后处理方式:"
+    echo "  1) 纳入保活（推荐）"
+    echo "  2) 本次忽略"
+    discover_mode_choice=$(read_choice_default "请选择" "${discover_mode_choice}")
+    if [[ "${discover_mode_choice}" == "2" ]]; then
+      discover_mode="ignore"
+    fi
+  fi
+
   printf '确认执行? (y/N): '
   local confirm
   IFS= read -r confirm
@@ -3956,7 +3988,7 @@ persist_append_wizard() {
     return
   fi
 
-  execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "1" "1" "1" "1" "1" "${DEFAULT_DEP_SET}" "${extra_ports}"
+  execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "1" "1" "1" "1" "1" "${DEFAULT_DEP_SET}" "${extra_ports}" "${discover_mode}"
 }
 
 install_wizard() {
