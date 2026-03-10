@@ -455,6 +455,7 @@ pre_upgrade_migrate_runtime_data() {
   local target_root_local_share_uv="${data_dir}/runtime/root-local-share-uv"
   local target_root_local_pipx="${data_dir}/runtime/root-local-pipx"
   local target_root_local_share_pipx="${data_dir}/runtime/root-local-share-pipx"
+  local target_root_pip_config="${data_dir}/runtime/root-pip-config"
   local target_root_rustup="${data_dir}/runtime/root-rustup"
   local target_root_config="${data_dir}/runtime/root-config"
   local target_root_ssh="${data_dir}/runtime/root-ssh"
@@ -465,6 +466,8 @@ pre_upgrade_migrate_runtime_data() {
   local target_root_netrc="${data_dir}/runtime/root-netrc"
   local target_root_npmrc="${data_dir}/runtime/root-npmrc"
   local target_root_pypirc="${data_dir}/runtime/root-pypirc"
+  local target_root_cargo_config="${data_dir}/runtime/root-cargo-config"
+  local target_root_cargo_config_toml="${data_dir}/runtime/root-cargo-config-toml"
   local target_etc_apt_sources_list_d="${data_dir}/runtime/etc-apt-sources-list-d"
   local target_etc_apt_keyrings="${data_dir}/runtime/etc-apt-keyrings"
   local target_root_npm_cache="${data_dir}/runtime/root-npm-cache"
@@ -483,6 +486,7 @@ pre_upgrade_migrate_runtime_data() {
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_uv}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_pipx}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_local_share_pipx}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_pip_config}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_rustup}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_config}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_ssh}" || return 1
@@ -493,6 +497,8 @@ pre_upgrade_migrate_runtime_data() {
   validate_runtime_target_path "${data_dir}" "${target_root_netrc}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_npmrc}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_pypirc}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_cargo_config}" || return 1
+  validate_runtime_target_path "${data_dir}" "${target_root_cargo_config_toml}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_etc_apt_sources_list_d}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_etc_apt_keyrings}" || return 1
   validate_runtime_target_path "${data_dir}" "${target_root_npm_cache}" || return 1
@@ -535,6 +541,9 @@ pre_upgrade_migrate_runtime_data() {
     if ! should_skip_migration_for_path "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.local/share/pipx" "${target_root_local_share_pipx}" "env:/root/.local/share/pipx" || return 1
     fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.pip" "${target_root_pip_config}" "env:/root/.pip"; then
+      copy_dir_from_container_to_host "${container_name}" "/root/.pip" "${target_root_pip_config}" "env:/root/.pip" || return 1
+    fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.rustup" "${target_root_rustup}" "env:/root/.rustup"; then
       copy_dir_from_container_to_host "${container_name}" "/root/.rustup" "${target_root_rustup}" "env:/root/.rustup" || return 1
     fi
@@ -564,6 +573,12 @@ pre_upgrade_migrate_runtime_data() {
     fi
     if ! should_skip_migration_for_path "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc"; then
       copy_file_from_container_to_host "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.cargo/config" "${target_root_cargo_config}" "env:/root/.cargo/config"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.cargo/config" "${target_root_cargo_config}" "env:/root/.cargo/config" || return 1
+    fi
+    if ! should_skip_migration_for_path "${container_name}" "/root/.cargo/config.toml" "${target_root_cargo_config_toml}" "env:/root/.cargo/config.toml"; then
+      copy_file_from_container_to_host "${container_name}" "/root/.cargo/config.toml" "${target_root_cargo_config_toml}" "env:/root/.cargo/config.toml" || return 1
     fi
 
     collect_and_migrate_discovered_config_paths "${container_name}" "${data_dir}" || return 1

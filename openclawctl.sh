@@ -772,6 +772,7 @@ run_gateway_container() {
       "${data_dir}/runtime/root-local-share-uv" \
       "${data_dir}/runtime/root-local-pipx" \
       "${data_dir}/runtime/root-local-share-pipx" \
+      "${data_dir}/runtime/root-pip-config" \
       "${data_dir}/runtime/root-rustup" \
       "${data_dir}/runtime/root-config" \
       "${data_dir}/runtime/root-ssh" \
@@ -781,7 +782,9 @@ run_gateway_container() {
     run_cmd touch "${data_dir}/runtime/root-gitconfig" \
       "${data_dir}/runtime/root-netrc" \
       "${data_dir}/runtime/root-npmrc" \
-      "${data_dir}/runtime/root-pypirc"
+      "${data_dir}/runtime/root-pypirc" \
+      "${data_dir}/runtime/root-cargo-config" \
+      "${data_dir}/runtime/root-cargo-config-toml"
     volume_args+=("-v" "${data_dir}/runtime/usr-local-go:/usr/local/go")
     if [[ "${persist_node_modules_mount}" == "1" ]]; then
       run_cmd mkdir -p "${data_dir}/runtime/usr-local-lib-node-modules"
@@ -791,6 +794,7 @@ run_gateway_container() {
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv")
     volume_args+=("-v" "${data_dir}/runtime/root-local-pipx:/root/.local/pipx")
     volume_args+=("-v" "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx")
+    volume_args+=("-v" "${data_dir}/runtime/root-pip-config:/root/.pip")
     volume_args+=("-v" "${data_dir}/runtime/root-rustup:/root/.rustup")
     volume_args+=("-v" "${data_dir}/runtime/root-config:/root/.config")
     volume_args+=("-v" "${data_dir}/runtime/root-ssh:/root/.ssh")
@@ -801,6 +805,8 @@ run_gateway_container() {
     volume_args+=("-v" "${data_dir}/runtime/root-netrc:/root/.netrc")
     volume_args+=("-v" "${data_dir}/runtime/root-npmrc:/root/.npmrc")
     volume_args+=("-v" "${data_dir}/runtime/root-pypirc:/root/.pypirc")
+    volume_args+=("-v" "${data_dir}/runtime/root-cargo-config:/root/.cargo/config")
+    volume_args+=("-v" "${data_dir}/runtime/root-cargo-config-toml:/root/.cargo/config.toml")
 
     local discovered_pair discovered_host discovered_container
     while IFS= read -r discovered_pair; do
@@ -915,6 +921,7 @@ compose_collect_volume_mappings() {
     printf '%s\n' "${data_dir}/runtime/root-local-share-uv:/root/.local/share/uv"
     printf '%s\n' "${data_dir}/runtime/root-local-pipx:/root/.local/pipx"
     printf '%s\n' "${data_dir}/runtime/root-local-share-pipx:/root/.local/share/pipx"
+    printf '%s\n' "${data_dir}/runtime/root-pip-config:/root/.pip"
     printf '%s\n' "${data_dir}/runtime/root-rustup:/root/.rustup"
     printf '%s\n' "${data_dir}/runtime/root-config:/root/.config"
     printf '%s\n' "${data_dir}/runtime/root-ssh:/root/.ssh"
@@ -925,6 +932,8 @@ compose_collect_volume_mappings() {
     printf '%s\n' "${data_dir}/runtime/root-netrc:/root/.netrc"
     printf '%s\n' "${data_dir}/runtime/root-npmrc:/root/.npmrc"
     printf '%s\n' "${data_dir}/runtime/root-pypirc:/root/.pypirc"
+    printf '%s\n' "${data_dir}/runtime/root-cargo-config:/root/.cargo/config"
+    printf '%s\n' "${data_dir}/runtime/root-cargo-config-toml:/root/.cargo/config.toml"
 
     local discovered_pair discovered_host discovered_container
     while IFS= read -r discovered_pair; do
@@ -1645,6 +1654,7 @@ detect_persist_choice_from_container() {
       has_mount_destination "${name}" "/root/.local/share/uv" || \
       has_mount_destination "${name}" "/root/.local/pipx" || \
       has_mount_destination "${name}" "/root/.local/share/pipx" || \
+      has_mount_destination "${name}" "/root/.pip" || \
       has_mount_destination "${name}" "/root/.rustup" || \
       has_mount_destination "${name}" "/root/.config" || \
       has_mount_destination "${name}" "/root/.ssh" || \
@@ -1654,7 +1664,9 @@ detect_persist_choice_from_container() {
       has_mount_destination "${name}" "/root/.kube" || \
       has_mount_destination "${name}" "/root/.netrc" || \
       has_mount_destination "${name}" "/root/.npmrc" || \
-      has_mount_destination "${name}" "/root/.pypirc"; then
+      has_mount_destination "${name}" "/root/.pypirc" || \
+      has_mount_destination "${name}" "/root/.cargo/config" || \
+      has_mount_destination "${name}" "/root/.cargo/config.toml"; then
       echo "1"
       return
     fi
@@ -2463,6 +2475,7 @@ runtime_persist_paths_desc() {
     lines+=("${data_dir}/runtime/root-local-share-uv")
     lines+=("${data_dir}/runtime/root-local-pipx")
     lines+=("${data_dir}/runtime/root-local-share-pipx")
+    lines+=("${data_dir}/runtime/root-pip-config")
     lines+=("${data_dir}/runtime/root-rustup")
     lines+=("${data_dir}/runtime/root-config")
     lines+=("${data_dir}/runtime/root-ssh")
@@ -2473,6 +2486,8 @@ runtime_persist_paths_desc() {
     lines+=("${data_dir}/runtime/root-netrc")
     lines+=("${data_dir}/runtime/root-npmrc")
     lines+=("${data_dir}/runtime/root-pypirc")
+    lines+=("${data_dir}/runtime/root-cargo-config")
+    lines+=("${data_dir}/runtime/root-cargo-config-toml")
   fi
   if [[ "${apt_cfg_choice}" == "1" ]]; then
     lines+=("${data_dir}/runtime/etc-apt-sources-list-d")
@@ -4582,7 +4597,7 @@ safe_rebuild_wizard() {
 
   local -a auto_enabled=()
   if [[ "${bin_persist_choice}" != "1" ]]; then
-    if container_path_has_data "${name}" "/root/.local/bin" || container_path_has_data "${name}" "/root/go/bin"; then
+    if container_path_has_data "${name}" "/root/.local/bin" || container_path_has_data "${name}" "/root/go/bin" || container_path_has_data "${name}" "/root/.cargo/bin"; then
       bin_persist_choice="1"
       auto_enabled+=("bin")
     fi
@@ -4594,6 +4609,7 @@ safe_rebuild_wizard() {
       container_path_has_data "${name}" "/root/.local/share/uv" || \
       container_path_has_data "${name}" "/root/.local/pipx" || \
       container_path_has_data "${name}" "/root/.local/share/pipx" || \
+      container_path_has_data "${name}" "/root/.pip" || \
       container_path_has_data "${name}" "/root/.config" || \
       container_path_has_data "${name}" "/root/.ssh" || \
       container_path_has_data "${name}" "/root/.gitconfig" || \
@@ -4602,7 +4618,9 @@ safe_rebuild_wizard() {
       container_path_has_data "${name}" "/root/.kube" || \
       container_path_has_data "${name}" "/root/.netrc" || \
       container_path_has_data "${name}" "/root/.npmrc" || \
-      container_path_has_data "${name}" "/root/.pypirc"; then
+      container_path_has_data "${name}" "/root/.pypirc" || \
+      container_path_has_data "${name}" "/root/.cargo/config" || \
+      container_path_has_data "${name}" "/root/.cargo/config.toml"; then
       env_persist_choice="1"
       auto_enabled+=("env")
     fi
@@ -4614,7 +4632,7 @@ safe_rebuild_wizard() {
     fi
   fi
   if [[ "${cache_persist_choice}" != "1" ]]; then
-    if container_path_has_data "${name}" "/root/.npm" || container_path_has_data "${name}" "/root/go/pkg/mod"; then
+    if container_path_has_data "${name}" "/root/.npm" || container_path_has_data "${name}" "/root/go/pkg/mod" || container_path_has_data "${name}" "/root/.cargo/registry" || container_path_has_data "${name}" "/root/.cargo/git"; then
       cache_persist_choice="1"
       auto_enabled+=("cache")
     fi
