@@ -473,6 +473,54 @@ software_detection_binaries_for_token() {
   esac
 }
 
+software_detection_npm_packages_for_token() {
+  local token="$1"
+  local kind arg1
+  kind=$(catalog_field_for_id "software" "${token}" "kind")
+  arg1=$(catalog_field_for_id "software" "${token}" "arg1")
+
+  case "${kind}" in
+    npm_package)
+      [[ -n "${arg1}" ]] && printf '%s\n' "${arg1}"
+      ;;
+    clawpanel|easyclaw)
+      printf '%s\n' "@milkkey/clawpanel"
+      printf '%s\n' "@xiaomaosi/openclaw-easy-cli"
+      ;;
+    claudecodeui)
+      printf '%s\n' "@siteboon/claude-code-ui"
+      printf '%s\n' "task-master-ai"
+      ;;
+  esac
+}
+
+software_detection_python_packages_for_token() {
+  local token="$1"
+  case "${token}" in
+    notebooklm)
+      printf '%s\n' "notebooklm"
+      ;;
+  esac
+}
+
+append_source_if_dir_exists() {
+  local current="$1"
+  local path="$2"
+  if [[ -d "${path}" ]]; then
+    current=$(append_discover_source "${current}" "路径:${path}")
+  fi
+  printf '%s\n' "${current}"
+}
+
+append_source_if_file_exists() {
+  local current="$1"
+  local path="$2"
+  if [[ -f "${path}" ]]; then
+    current=$(append_discover_source "${current}" "路径:${path}")
+  fi
+  printf '%s\n' "${current}"
+}
+
 append_discover_source() {
   local current="$1"
   local candidate="$2"
@@ -497,12 +545,24 @@ software_token_sources_from_paths() {
   local token="$1"
   local data_dir="$2"
   local sources=""
+  local runtime_dir="${data_dir}/runtime"
+  local software_root="${data_dir}/software"
+  local core_software_root="${data_dir}/.openclaw/software"
   local binary
   local -a path_candidates=(
-    "${data_dir}/software/bin"
-    "${data_dir}/runtime/root-local-bin"
-    "${data_dir}/runtime/path-shims"
+    "${software_root}"
+    "${software_root}/bin"
+    "${core_software_root}"
+    "${core_software_root}/bin"
+    "${runtime_dir}/root-local-bin"
+    "${runtime_dir}/root-go-bin"
+    "${runtime_dir}/root-cargo-bin"
+    "${runtime_dir}/path-shims"
     "${data_dir}/.openclaw/software/bin"
+  )
+  local -a recursive_candidates=(
+    "${software_root}"
+    "${core_software_root}"
   )
 
   for binary in $(software_detection_binaries_for_token "${token}"); do
@@ -513,18 +573,47 @@ software_token_sources_from_paths() {
         sources=$(append_discover_source "${sources}" "路径:${base}/${binary}")
       fi
     done
+
+    local root
+    for root in "${recursive_candidates[@]}"; do
+      [[ -d "${root}" ]] || continue
+      local found
+      while IFS= read -r found; do
+        [[ -n "${found}" ]] || continue
+        sources=$(append_discover_source "${sources}" "路径:${found}")
+      done < <(find "${root}" -maxdepth 4 -type f -name "${binary}" -perm -u+x 2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+    done
+  done
+
+  local npm_pkg
+  for npm_pkg in $(software_detection_npm_packages_for_token "${token}"); do
+    [[ -n "${npm_pkg}" ]] || continue
+    sources=$(append_source_if_dir_exists "${sources}" "${runtime_dir}/usr-local-lib-node-modules/${npm_pkg}")
+    sources=$(append_source_if_dir_exists "${sources}" "${runtime_dir}/root-local-lib/node_modules/${npm_pkg}")
+    sources=$(append_source_if_file_exists "${sources}" "${runtime_dir}/usr-local-lib-node-modules/${npm_pkg}/package.json")
+    sources=$(append_source_if_file_exists "${sources}" "${runtime_dir}/root-local-lib/node_modules/${npm_pkg}/package.json")
+  done
+
+  local py_pkg
+  for py_pkg in $(software_detection_python_packages_for_token "${token}"); do
+    [[ -n "${py_pkg}" ]] || continue
+    local py_site
+    while IFS= read -r py_site; do
+      [[ -n "${py_site}" ]] || continue
+      sources=$(append_discover_source "${sources}" "路径:${py_site}")
+    done < <(find "${runtime_dir}/root-local-lib" -maxdepth 4 -type d \( -name "${py_pkg}" -o -name "${py_pkg}-*" -o -name "${py_pkg}_*" \) 2>/dev/null || true)
   done
 
   case "${token}" in
     clawpanel|easyclaw)
-      [[ -d "${data_dir}/software/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/clawpanel")
-      [[ -f "${data_dir}/software/clawpanel/install.sh" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/clawpanel/install.sh")
-      [[ -d "${data_dir}/.openclaw/software/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/.openclaw/software/clawpanel")
+      [[ -d "${software_root}/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${software_root}/clawpanel")
+      [[ -f "${software_root}/clawpanel/install.sh" ]] && sources=$(append_discover_source "${sources}" "路径:${software_root}/clawpanel/install.sh")
+      [[ -d "${core_software_root}/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${core_software_root}/clawpanel")
       ;;
     claudecodeui)
-      [[ -d "${data_dir}/software/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/claudecodeui")
-      [[ -f "${data_dir}/software/claudecodeui/runtime.env" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/claudecodeui/runtime.env")
-      [[ -d "${data_dir}/.openclaw/software/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/.openclaw/software/claudecodeui")
+      [[ -d "${software_root}/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${software_root}/claudecodeui")
+      [[ -f "${software_root}/claudecodeui/runtime.env" ]] && sources=$(append_discover_source "${sources}" "路径:${software_root}/claudecodeui/runtime.env")
+      [[ -d "${core_software_root}/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${core_software_root}/claudecodeui")
       ;;
   esac
 
@@ -567,6 +656,22 @@ software_token_sources_in_container() {
     [[ -n "${binary}" ]] || continue
     if docker exec "${container_name}" sh -lc "command -v '${binary}' >/dev/null 2>&1" >/dev/null 2>&1; then
       sources=$(append_discover_source "${sources}" "容器:${container_name}:command -v ${binary}")
+    fi
+  done
+
+  local npm_pkg
+  for npm_pkg in $(software_detection_npm_packages_for_token "${token}"); do
+    [[ -n "${npm_pkg}" ]] || continue
+    if docker exec "${container_name}" sh -lc "command -v npm >/dev/null 2>&1 && npm ls -g --depth=0 '${npm_pkg}' >/dev/null 2>&1" >/dev/null 2>&1; then
+      sources=$(append_discover_source "${sources}" "容器:${container_name}:npm -g ${npm_pkg}")
+    fi
+  done
+
+  local py_pkg
+  for py_pkg in $(software_detection_python_packages_for_token "${token}"); do
+    [[ -n "${py_pkg}" ]] || continue
+    if docker exec "${container_name}" sh -lc "command -v python3 >/dev/null 2>&1 && python3 -m pip show '${py_pkg}' >/dev/null 2>&1" >/dev/null 2>&1; then
+      sources=$(append_discover_source "${sources}" "容器:${container_name}:python3 -m pip show ${py_pkg}")
     fi
   done
 

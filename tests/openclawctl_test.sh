@@ -114,12 +114,16 @@ assert_contains "${components_config_manifest_output}" "\"obsidian-skills\""
 components_discover_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software/bin" "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/path-shims"; touch "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; chmod +x "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; discover_software_set "openclaw_discover_demo" "${data_dir}" ""' 2>&1 || true)
 assert_contains "${components_discover_output}" "gh codex clawpanel"
 
-# 0f6) components helpers should build discover report with software labels and source paths
-components_discover_report_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software/bin" "${data_dir}/runtime/root-local-bin"; touch "${data_dir}/software/bin/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; chmod +x "${data_dir}/software/bin/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; render_software_discover_report "$(discover_software_candidates_report "openclaw_discover_demo" "${data_dir}" "")"' 2>&1 || true)
+# 0f6) components helpers should build discover report with software labels and source paths (without requiring software/bin)
+components_discover_report_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software" "${data_dir}/runtime/root-local-bin"; touch "${data_dir}/software/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; chmod +x "${data_dir}/software/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; render_software_discover_report "$(discover_software_candidates_report "openclaw_discover_demo" "${data_dir}" "")"' 2>&1 || true)
 assert_contains "${components_discover_report_output}" "GitHub CLI(gh)"
 assert_contains "${components_discover_report_output}" "NotebookLM CLI"
 assert_contains "${components_discover_report_output}" "/runtime/root-local-bin/gh"
-assert_contains "${components_discover_report_output}" "/software/bin/notebooklm"
+assert_contains "${components_discover_report_output}" "/software/notebooklm"
+
+# 0f7) components discover should detect npm global package folders (without executable entry in software/bin)
+components_discover_npm_pkg_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/runtime/root-local-lib/node_modules/@openai/codex"; : > "${data_dir}/runtime/root-local-lib/node_modules/@openai/codex/package.json"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; discover_software_set "openclaw_discover_demo" "${data_dir}" ""' 2>&1 || true)
+assert_contains "${components_discover_npm_pkg_output}" "codex"
 
 # 0g) deps helpers should expose runtime dependency checker workflow
 deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=1; DEFAULT_DEP_SET="npm uv"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; manage_container_runtime_deps "openclaw_deps_test" "check" "npm uv go"' 2>&1 || true)
@@ -897,12 +901,12 @@ assert_contains "${persist_output}" "/runtime/etc-apt-sources-list-d:/etc/apt/so
 # 21c) interactive runtime persist append should support discover report confirm mode
 persist_discover_root="${tmpdir}/persist-discover-root"
 persist_discover_data_dir="${persist_discover_root}/openclaw_persist_discover"
-mkdir -p "${persist_discover_data_dir}/software/bin"
-cat > "${persist_discover_data_dir}/software/bin/notebooklm" <<'EOF'
+mkdir -p "${persist_discover_data_dir}/software"
+cat > "${persist_discover_data_dir}/software/notebooklm" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "${persist_discover_data_dir}/software/bin/notebooklm"
+chmod +x "${persist_discover_data_dir}/software/notebooklm"
 persist_discover_input=$'2\n3\n2\nopenclaw_persist_discover\n2\ny\n0\n'
 persist_discover_output=$(printf "%s" "${persist_discover_input}" | OPENCLAWCTL_DATA_ROOT="${persist_discover_root}" bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${persist_discover_output}" "软件发现候选（扫描报告）"
@@ -1102,12 +1106,12 @@ assert_contains "${wizard_upgrade_profile_output}" "docker exec openclaw_upgrade
 
 # 28b) upgrade should discover software from persisted paths when profile is absent
 upgrade_discover_data_dir="${tmpdir}/openclaw_upgrade_discover"
-mkdir -p "${upgrade_discover_data_dir}/software/bin"
-cat > "${upgrade_discover_data_dir}/software/bin/notebooklm" <<'EOF'
+mkdir -p "${upgrade_discover_data_dir}/software"
+cat > "${upgrade_discover_data_dir}/software/notebooklm" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "${upgrade_discover_data_dir}/software/bin/notebooklm"
+chmod +x "${upgrade_discover_data_dir}/software/notebooklm"
 wizard_upgrade_discover_cfg="${tmpdir}/upgrade-discover.cfg"
 cat > "${wizard_upgrade_discover_cfg}" <<EOF
 NAME=openclaw_upgrade_discover
@@ -1160,17 +1164,17 @@ assert_not_contains "${wizard_upgrade_discover_ignore_output}" "docker exec open
 # 28d) upgrade discovery summary should display software candidate report with source paths
 upgrade_summary_root="${tmpdir}/upgrade-summary-root"
 upgrade_summary_data_dir="${upgrade_summary_root}/openclaw_upgrade_summary"
-mkdir -p "${upgrade_summary_data_dir}/software/bin"
-cat > "${upgrade_summary_data_dir}/software/bin/notebooklm" <<'EOF'
+mkdir -p "${upgrade_summary_data_dir}/software"
+cat > "${upgrade_summary_data_dir}/software/notebooklm" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "${upgrade_summary_data_dir}/software/bin/notebooklm"
+chmod +x "${upgrade_summary_data_dir}/software/notebooklm"
 upgrade_summary_input=$'2\n2\nopenclaw_upgrade_summary\n5\n\nq\n0\n'
 upgrade_summary_output=$(printf "%s" "${upgrade_summary_input}" | OPENCLAWCTL_DATA_ROOT="${upgrade_summary_root}" bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${upgrade_summary_output}" "软件发现候选（扫描报告）"
 assert_contains "${upgrade_summary_output}" "NotebookLM CLI"
-assert_contains "${upgrade_summary_output}" "/software/bin/notebooklm"
+assert_contains "${upgrade_summary_output}" "/software/notebooklm"
 
 # 29) persist should auto avoid clawpanel web host-port conflicts
 persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"
