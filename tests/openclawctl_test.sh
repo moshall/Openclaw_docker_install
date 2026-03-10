@@ -114,6 +114,13 @@ assert_contains "${components_config_manifest_output}" "\"obsidian-skills\""
 components_discover_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software/bin" "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/path-shims"; touch "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; chmod +x "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; discover_software_set "openclaw_discover_demo" "${data_dir}" ""' 2>&1 || true)
 assert_contains "${components_discover_output}" "gh codex clawpanel"
 
+# 0f6) components helpers should build discover report with software labels and source paths
+components_discover_report_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software/bin" "${data_dir}/runtime/root-local-bin"; touch "${data_dir}/software/bin/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; chmod +x "${data_dir}/software/bin/notebooklm" "${data_dir}/runtime/root-local-bin/gh"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; render_software_discover_report "$(discover_software_candidates_report "openclaw_discover_demo" "${data_dir}" "")"' 2>&1 || true)
+assert_contains "${components_discover_report_output}" "GitHub CLI(gh)"
+assert_contains "${components_discover_report_output}" "NotebookLM CLI"
+assert_contains "${components_discover_report_output}" "/runtime/root-local-bin/gh"
+assert_contains "${components_discover_report_output}" "/software/bin/notebooklm"
+
 # 0g) deps helpers should expose runtime dependency checker workflow
 deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=1; DEFAULT_DEP_SET="npm uv"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; manage_container_runtime_deps "openclaw_deps_test" "check" "npm uv go"' 2>&1 || true)
 assert_contains "${deps_manage_output}" "开始检测容器依赖: npm uv go"
@@ -468,7 +475,7 @@ assert_contains "${install_output}" "TOKEN="
 assert_not_contains "${install_output}" "Openclaw_Easy_Cli"
 
 # 2) upgrade wizard: single-screen grouped editing + official beta + env persistence(on) + deps include go
-upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n1\n4\n1\n1\n1\n1\n1\n2\n2\n\n5\n\nc\ny\n0\n'
+upgrade_input=$'2\n2\nopenclaw_demo\n1\n1\n2\n2\n/opt/1panel/apps/openclaw_demo\n1\n1\n1\n1\n3\n4113\n18789\n1\n4\n1\n1\n1\n1\n1\n2\n2\n\n1\n5\n\nc\ny\n0\n'
 upgrade_output=$(printf "%s" "${upgrade_input}" | bash "${SCRIPT_PATH}" --dry-run)
 
 assert_contains "${upgrade_output}" "2) 🔄 升级 Docker 实例"
@@ -601,7 +608,7 @@ assert_contains "${rebuild_output}" "-p 4231:4231"
 assert_contains "${rebuild_output}" "docker exec openclaw_rebuild sh -lc <runtime-path-repair-script>"
 
 # 12b) rebuild dependency editor should include python3 option and selection
-rebuild_python_dep_input=$'2\n3\n1\nopenclaw_rebuild_py\n4\n1\n1\n1\n2\n2\n1\n\nc\ny\n0\n'
+rebuild_python_dep_input=$'2\n3\n1\nopenclaw_rebuild_py\n4\n1\n1\n1\n2\n2\n1\n\n1\nc\ny\n0\n'
 rebuild_python_dep_output=$(printf "%s" "${rebuild_python_dep_input}" | OPENCLAWCTL_TEST_CURRENT_IMAGE=docker.io/1panel/openclaw:2026.2.20 bash "${SCRIPT_PATH}" --dry-run 2>&1)
 assert_contains "${rebuild_python_dep_output}" "是否包含 python3:"
 assert_contains "${rebuild_python_dep_output}" "python3=已选"
@@ -1104,9 +1111,35 @@ TARGET_DEPS=npm uv
 EXTRA_PORTS=
 EOF
 wizard_upgrade_discover_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${wizard_upgrade_discover_cfg}")
-assert_contains "${wizard_upgrade_discover_output}" "检测到已发现但未登记的软件，升级后将自动保活"
+assert_contains "${wizard_upgrade_discover_output}" "检测到未登记的软件候选（扫描报告）"
 assert_contains "${wizard_upgrade_discover_output}" "开始检测容器依赖: npm uv python3"
 assert_contains "${wizard_upgrade_discover_output}" "docker exec openclaw_upgrade_discover bash -lc <software-notebooklm-install-script>"
+
+# 28c) upgrade discover should support ignore mode in config execution
+wizard_upgrade_discover_ignore_cfg="${tmpdir}/upgrade-discover-ignore.cfg"
+cat > "${wizard_upgrade_discover_ignore_cfg}" <<EOF
+NAME=openclaw_upgrade_discover_ignore
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4342
+CONTAINER_PORT=18789
+DATA_DIR=${upgrade_discover_data_dir}
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+DISCOVER_CHOICE=2
+EXTRA_PORTS=
+EOF
+wizard_upgrade_discover_ignore_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${wizard_upgrade_discover_ignore_cfg}")
+assert_contains "${wizard_upgrade_discover_ignore_output}" "检测到未登记的软件候选（扫描报告）"
+assert_contains "${wizard_upgrade_discover_ignore_output}" "本次已忽略候选软件，不纳入保活清单"
+assert_not_contains "${wizard_upgrade_discover_ignore_output}" "开始检测容器依赖: npm uv python3"
+assert_not_contains "${wizard_upgrade_discover_ignore_output}" "docker exec openclaw_upgrade_discover_ignore bash -lc <software-notebooklm-install-script>"
 
 # 29) persist should auto avoid clawpanel web host-port conflicts
 persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"

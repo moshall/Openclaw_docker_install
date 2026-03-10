@@ -2668,6 +2668,7 @@ load_simple_config_file() {
       TOKEN_MANUAL) TOKEN_MANUAL_CFG="${value}" ;;
       OFFICIAL_TAG) OFFICIAL_TAG_CFG="${value}" ;;
       DEPS_INSTALL_CHOICE) DEPS_INSTALL_CHOICE_CFG="${value}" ;;
+      DISCOVER_CHOICE) DISCOVER_CHOICE_CFG="${value}" ;;
       TARGET_DEPS) TARGET_DEPS_CFG="${value}" ;;
       SOFTWARE_SET) SOFTWARE_SET_CFG="${value}" ;;
       SKILL_SET) SKILL_SET_CFG="${value}" ;;
@@ -2785,6 +2786,7 @@ run_upgrade_from_config_file() {
   EASY_CHOICE_CFG="1"
   OFFICIAL_TAG_CFG=""
   DEPS_INSTALL_CHOICE_CFG="1"
+  DISCOVER_CHOICE_CFG="1"
   TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
   EXTRA_PORTS_CFG=""
 
@@ -2822,12 +2824,19 @@ run_upgrade_from_config_file() {
   echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
   echo "ClawPanel 检查升级: $(choice_to_yes_no "${EASY_CHOICE_CFG}")"
   echo "升级后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
+  if [[ "${DISCOVER_CHOICE_CFG}" == "2" ]]; then
+    echo "软件发现候选处理: 本次忽略"
+  else
+    echo "软件发现候选处理: 纳入保活（推荐）"
+  fi
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
   fi
   echo "扩展端口映射: $(value_or_unset "${preview_extra_ports}")"
 
-  execute_upgrade_plan "${NAME_CFG}" "${image}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}"
+  local discover_mode_cfg="apply"
+  [[ "${DISCOVER_CHOICE_CFG}" == "2" ]] && discover_mode_cfg="ignore"
+  execute_upgrade_plan "${NAME_CFG}" "${image}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${EASY_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}" "${discover_mode_cfg}"
 }
 
 run_rebuild_from_config_file() {
@@ -2841,6 +2850,7 @@ run_rebuild_from_config_file() {
   APT_CFG_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_APT_CONFIG_PERSIST}"
   CACHE_PERSIST_CHOICE_CFG="${DEFAULT_ENABLE_CACHE_PERSIST}"
   DEPS_INSTALL_CHOICE_CFG="1"
+  DISCOVER_CHOICE_CFG="1"
   TARGET_DEPS_CFG="${DEFAULT_DEP_SET}"
   EXTRA_PORTS_CFG=""
 
@@ -2871,12 +2881,19 @@ run_rebuild_from_config_file() {
   echo "APT源Key 持久化: $(choice_to_yes_no "${APT_CFG_PERSIST_CHOICE_CFG}")"
   echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${CACHE_PERSIST_CHOICE_CFG}")"
   echo "重建后依赖补齐: $(choice_to_yes_no "${DEPS_INSTALL_CHOICE_CFG}")"
+  if [[ "${DISCOVER_CHOICE_CFG}" == "2" ]]; then
+    echo "软件发现候选处理: 本次忽略"
+  else
+    echo "软件发现候选处理: 纳入保活（推荐）"
+  fi
   if [[ "${DEPS_INSTALL_CHOICE_CFG}" == "1" ]]; then
     echo "依赖清单: ${TARGET_DEPS_CFG}"
   fi
   echo "扩展端口映射: $(value_or_unset "${preview_extra_ports}")"
 
-  execute_rebuild_plan "${NAME_CFG}" "${IMAGE_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}"
+  local discover_mode_cfg="apply"
+  [[ "${DISCOVER_CHOICE_CFG}" == "2" ]] && discover_mode_cfg="ignore"
+  execute_rebuild_plan "${NAME_CFG}" "${IMAGE_CFG}" "${data_dir}" "${HOST_PORT_CFG}" "${CONTAINER_PORT_CFG}" "${BIN_PERSIST_CHOICE_CFG}" "${ENV_PERSIST_CHOICE_CFG}" "${APT_CFG_PERSIST_CHOICE_CFG}" "${CACHE_PERSIST_CHOICE_CFG}" "${DEPS_INSTALL_CHOICE_CFG}" "${TARGET_DEPS_CFG}" "${preview_extra_ports}" "${discover_mode_cfg}"
 }
 
 execute_easyclaw_upgrade_plan() {
@@ -4271,6 +4288,7 @@ upgrade_wizard() {
   fi
   local deps_repair_choice="1"
   local upgrade_dep_set="${saved_dep_set}"
+  local discover_mode_choice="1"
   local extra_ports
   extra_ports=$(detect_existing_extra_ports "${name}" "${host_port}" "${container_port}")
 
@@ -4282,7 +4300,7 @@ upgrade_wizard() {
     echo "1) 📦 目标版本: $(install_version_group_summary "${image}" "${source_choice}" "${channel_choice}" "${official_tag}")"
     echo "2) 💾 数据保存: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
     echo "3) 🌐 网络访问: $(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "${easyclaw_upgrade}")"
-    echo "4) 🧩 功能加强: $(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}")"
+    echo "4) 🧩 功能加强: $(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}") | 发现候选=$(if [[ "${discover_mode_choice}" == "2" ]]; then echo "忽略"; else echo "纳入保活"; fi)"
     echo "5) 🔎 查看升级前检测摘要"
     echo "c) 确认并执行升级"
     echo "q) 取消并返回"
@@ -4353,6 +4371,10 @@ upgrade_wizard() {
         if [[ "${deps_repair_choice}" == "1" ]]; then
           upgrade_dep_set=$(prompt_dep_set "${upgrade_dep_set}")
         fi
+        echo "发现候选软件后处理方式:"
+        echo "  1) 纳入保活（推荐）"
+        echo "  2) 本次忽略"
+        discover_mode_choice=$(read_choice_default "请选择" "${discover_mode_choice}")
         log_info "已更新：$(feature_group_summary "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}")"
         ;;
       5)
@@ -4385,10 +4407,30 @@ upgrade_wizard() {
         echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "ClawPanel 检查升级: $(choice_to_yes_no "${easyclaw_upgrade}")"
         echo "升级后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
+        if [[ "${discover_mode_choice}" == "2" ]]; then
+          echo "软件发现候选处理: 本次忽略"
+        else
+          echo "软件发现候选处理: 纳入保活（推荐）"
+        fi
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${upgrade_dep_set}"
         fi
         echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+
+        local discover_current_set discover_report discover_report_text
+        discover_current_set=$(load_software_profile "${data_dir}")
+        discover_current_set=$(normalize_software_set "${discover_current_set}")
+        discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${discover_current_set}")
+        if [[ -n "${discover_report}" ]]; then
+          echo
+          echo "--- 软件发现扫描报告 ---"
+          discover_report_text=$(render_software_discover_report "${discover_report}")
+          printf '%s\n' "${discover_report_text}"
+          echo "发现候选软件后处理方式:"
+          echo "  1) 纳入保活（推荐）"
+          echo "  2) 本次忽略"
+          discover_mode_choice=$(read_choice_default "请选择" "${discover_mode_choice}")
+        fi
 
         local running_now
         running_now="0"
@@ -4409,7 +4451,10 @@ upgrade_wizard() {
           continue
         fi
 
-        execute_upgrade_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}" "${extra_ports}" || continue
+        local discover_mode
+        discover_mode="apply"
+        [[ "${discover_mode_choice}" == "2" ]] && discover_mode="ignore"
+        execute_upgrade_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${easyclaw_upgrade}" "${deps_repair_choice}" "${upgrade_dep_set}" "${extra_ports}" "${discover_mode}" || continue
         return
         ;;
       q|Q)
@@ -4481,6 +4526,7 @@ safe_rebuild_wizard() {
   fi
   local deps_repair_choice="1"
   local rebuild_dep_set="${saved_dep_set}"
+  local discover_mode_choice="1"
 
   print_upgrade_discovery_summary "${name}" "${data_dir}"
 
@@ -4533,7 +4579,7 @@ safe_rebuild_wizard() {
     echo "1) 🐳 实例信息: 容器=${name} | 镜像=${image}"
     echo "2) 💾 数据保存: $(data_persistence_group_summary "${data_dir}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${data_dir}")"
     echo "3) 🌐 网络访问: $(network_group_summary_no_bind "${host_port}" "${container_port}" "${extra_ports}" "1")"
-    echo "4) 🧩 功能加强: $(if [[ "${deps_repair_choice}" == "1" ]]; then echo "依赖补齐=是 | $(deps_summary_line "${rebuild_dep_set}")"; else echo "依赖补齐=否"; fi)"
+    echo "4) 🧩 功能加强: $(if [[ "${deps_repair_choice}" == "1" ]]; then echo "依赖补齐=是 | $(deps_summary_line "${rebuild_dep_set}")"; else echo "依赖补齐=否"; fi) | 发现候选=$(if [[ "${discover_mode_choice}" == "2" ]]; then echo "忽略"; else echo "纳入保活"; fi)"
     echo "5) 🔎 查看重建前检测摘要"
     echo "c) 确认并执行重建"
     echo "q) 取消并返回"
@@ -4629,6 +4675,10 @@ safe_rebuild_wizard() {
         if [[ "${deps_repair_choice}" == "1" ]]; then
           rebuild_dep_set=$(prompt_dep_set "${rebuild_dep_set}")
         fi
+        echo "发现候选软件后处理方式:"
+        echo "  1) 纳入保活（推荐）"
+        echo "  2) 本次忽略"
+        discover_mode_choice=$(read_choice_default "请选择" "${discover_mode_choice}")
         log_info "已更新：$(if [[ "${deps_repair_choice}" == "1" ]]; then echo "依赖补齐=是 | $(deps_summary_line "${rebuild_dep_set}")"; else echo "依赖补齐=否"; fi)"
         ;;
       5)
@@ -4653,10 +4703,30 @@ safe_rebuild_wizard() {
         echo "APT源Key 持久化: $(choice_to_yes_no "${apt_cfg_persist_choice}")"
         echo "缓存持久化(.npm/go mod/cargo): $(choice_to_yes_no "${cache_persist_choice}")"
         echo "重建后依赖补齐: $(choice_to_yes_no "${deps_repair_choice}")"
+        if [[ "${discover_mode_choice}" == "2" ]]; then
+          echo "软件发现候选处理: 本次忽略"
+        else
+          echo "软件发现候选处理: 纳入保活（推荐）"
+        fi
         if [[ "${deps_repair_choice}" == "1" ]]; then
           echo "依赖清单: ${rebuild_dep_set}"
         fi
         echo "扩展端口映射: $(value_or_unset "${extra_ports}")"
+
+        local discover_current_set discover_report discover_report_text
+        discover_current_set=$(load_software_profile "${data_dir}")
+        discover_current_set=$(normalize_software_set "${discover_current_set}")
+        discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${discover_current_set}")
+        if [[ -n "${discover_report}" ]]; then
+          echo
+          echo "--- 软件发现扫描报告 ---"
+          discover_report_text=$(render_software_discover_report "${discover_report}")
+          printf '%s\n' "${discover_report_text}"
+          echo "发现候选软件后处理方式:"
+          echo "  1) 纳入保活（推荐）"
+          echo "  2) 本次忽略"
+          discover_mode_choice=$(read_choice_default "请选择" "${discover_mode_choice}")
+        fi
 
         if is_container_running "${name}"; then
           log_info "检测到容器 ${name} 正在运行，重建会中断当前任务。"
@@ -4671,7 +4741,10 @@ safe_rebuild_wizard() {
           continue
         fi
 
-        execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${deps_repair_choice}" "${rebuild_dep_set}" "${extra_ports}" || continue
+        local discover_mode
+        discover_mode="apply"
+        [[ "${discover_mode_choice}" == "2" ]] && discover_mode="ignore"
+        execute_rebuild_plan "${name}" "${image}" "${data_dir}" "${host_port}" "${container_port}" "${bin_persist_choice}" "${env_persist_choice}" "${apt_cfg_persist_choice}" "${cache_persist_choice}" "${deps_repair_choice}" "${rebuild_dep_set}" "${extra_ports}" "${discover_mode}" || continue
         return
         ;;
       q|Q)

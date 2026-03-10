@@ -142,20 +142,39 @@ execute_upgrade_plan() {
   local deps_repair_choice="${11}"
   local upgrade_dep_set="${12}"
   local extra_ports="${13:-}"
+  local discover_mode="${14:-apply}"
   local software_set
   local skill_set
   local requested_image="${image}"
+  local discover_report
   local discovered_software_set
   local software_discovered_delta=0
 
+  case "${discover_mode}" in
+    2|ignore) discover_mode="ignore" ;;
+    *) discover_mode="apply" ;;
+  esac
+
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
-  discovered_software_set=$(discover_software_set "${name}" "${data_dir}" "${software_set}")
-  discovered_software_set=$(normalize_software_set "${discovered_software_set}")
-  if [[ "${discovered_software_set}" != "${software_set}" ]]; then
-    software_discovered_delta=1
-    software_set="${discovered_software_set}"
-    save_software_profile "${data_dir}" "${software_set}"
+  discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${software_set}")
+  if [[ -n "${discover_report}" ]]; then
+    log_info "检测到未登记的软件候选（扫描报告）"
+    while IFS= read -r report_line; do
+      [[ -n "${report_line}" ]] || continue
+      log_info "${report_line}"
+    done <<< "$(render_software_discover_report "${discover_report}")"
+    if [[ "${discover_mode}" == "ignore" ]]; then
+      log_info "本次已忽略候选软件，不纳入保活清单"
+    else
+      discovered_software_set=$(discover_software_candidates_set "${discover_report}")
+      discovered_software_set=$(normalize_software_set "${software_set} ${discovered_software_set}")
+      if [[ "${discovered_software_set}" != "${software_set}" ]]; then
+        software_discovered_delta=1
+        software_set="${discovered_software_set}"
+        save_software_profile "${data_dir}" "${software_set}"
+      fi
+    fi
   fi
   skill_set=$(load_skill_profile "${data_dir}")
   skill_set=$(normalize_skill_set "${skill_set}")
@@ -312,20 +331,39 @@ execute_rebuild_plan() {
   local deps_repair_choice="${10}"
   local rebuild_dep_set="${11}"
   local extra_ports="${12:-}"
+  local discover_mode="${13:-apply}"
   local software_set
   local skill_set
   local requested_image="${image}"
+  local discover_report
   local discovered_software_set
   local software_discovered_delta=0
 
+  case "${discover_mode}" in
+    2|ignore) discover_mode="ignore" ;;
+    *) discover_mode="apply" ;;
+  esac
+
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
-  discovered_software_set=$(discover_software_set "${name}" "${data_dir}" "${software_set}")
-  discovered_software_set=$(normalize_software_set "${discovered_software_set}")
-  if [[ "${discovered_software_set}" != "${software_set}" ]]; then
-    software_discovered_delta=1
-    software_set="${discovered_software_set}"
-    save_software_profile "${data_dir}" "${software_set}"
+  discover_report=$(discover_software_candidates_report "${name}" "${data_dir}" "${software_set}")
+  if [[ -n "${discover_report}" ]]; then
+    log_info "检测到未登记的软件候选（扫描报告）"
+    while IFS= read -r report_line; do
+      [[ -n "${report_line}" ]] || continue
+      log_info "${report_line}"
+    done <<< "$(render_software_discover_report "${discover_report}")"
+    if [[ "${discover_mode}" == "ignore" ]]; then
+      log_info "本次已忽略候选软件，不纳入保活清单"
+    else
+      discovered_software_set=$(discover_software_candidates_set "${discover_report}")
+      discovered_software_set=$(normalize_software_set "${software_set} ${discovered_software_set}")
+      if [[ "${discovered_software_set}" != "${software_set}" ]]; then
+        software_discovered_delta=1
+        software_set="${discovered_software_set}"
+        save_software_profile "${data_dir}" "${software_set}"
+      fi
+    fi
   fi
   skill_set=$(load_skill_profile "${data_dir}")
   skill_set=$(normalize_skill_set "${skill_set}")

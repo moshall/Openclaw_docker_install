@@ -473,9 +473,30 @@ software_detection_binaries_for_token() {
   esac
 }
 
-software_token_detected_from_paths() {
+append_discover_source() {
+  local current="$1"
+  local candidate="$2"
+  [[ -n "${candidate}" ]] || {
+    printf '%s\n' "${current}"
+    return 0
+  }
+  if [[ -z "${current}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ "${line}" == "${candidate}" ]] && {
+      printf '%s\n' "${current}"
+      return 0
+    }
+  done <<< "${current}"
+  printf '%s\n%s\n' "${current}" "${candidate}"
+}
+
+software_token_sources_from_paths() {
   local token="$1"
   local data_dir="$2"
+  local sources=""
   local binary
   local -a path_candidates=(
     "${data_dir}/software/bin"
@@ -489,54 +510,156 @@ software_token_detected_from_paths() {
     local base
     for base in "${path_candidates[@]}"; do
       if [[ -x "${base}/${binary}" ]]; then
-        return 0
+        sources=$(append_discover_source "${sources}" "路径:${base}/${binary}")
       fi
     done
   done
 
   case "${token}" in
     clawpanel|easyclaw)
-      [[ -d "${data_dir}/software/clawpanel" || -f "${data_dir}/software/clawpanel/install.sh" || -d "${data_dir}/.openclaw/software/clawpanel" ]] && return 0
+      [[ -d "${data_dir}/software/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/clawpanel")
+      [[ -f "${data_dir}/software/clawpanel/install.sh" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/clawpanel/install.sh")
+      [[ -d "${data_dir}/.openclaw/software/clawpanel" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/.openclaw/software/clawpanel")
       ;;
     claudecodeui)
-      [[ -d "${data_dir}/software/claudecodeui" || -f "${data_dir}/software/claudecodeui/runtime.env" || -d "${data_dir}/.openclaw/software/claudecodeui" ]] && return 0
+      [[ -d "${data_dir}/software/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/claudecodeui")
+      [[ -f "${data_dir}/software/claudecodeui/runtime.env" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/software/claudecodeui/runtime.env")
+      [[ -d "${data_dir}/.openclaw/software/claudecodeui" ]] && sources=$(append_discover_source "${sources}" "路径:${data_dir}/.openclaw/software/claudecodeui")
       ;;
   esac
 
-  return 1
+  printf '%s\n' "${sources}"
 }
 
-software_token_detected_in_container() {
+software_token_detected_from_paths() {
+  local token="$1"
+  local data_dir="$2"
+  [[ -n "$(software_token_sources_from_paths "${token}" "${data_dir}")" ]]
+}
+
+software_token_sources_in_container() {
   local token="$1"
   local container_name="$2"
+  local sources=""
 
-  [[ -n "${container_name}" ]] || return 1
+  [[ -n "${container_name}" ]] || {
+    printf '%s\n' ""
+    return 0
+  }
   if [[ -n "${OPENCLAWCTL_TEST_DISCOVERED_SOFTWARE:-}" ]]; then
-    token_in_list "${token}" ${OPENCLAWCTL_TEST_DISCOVERED_SOFTWARE} && return 0
+    if token_in_list "${token}" ${OPENCLAWCTL_TEST_DISCOVERED_SOFTWARE}; then
+      sources=$(append_discover_source "${sources}" "容器:${container_name}:模拟探测(${token})")
+    fi
+    printf '%s\n' "${sources}"
+    return 0
   fi
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    return 1
+    printf '%s\n' ""
+    return 0
   fi
-  command -v docker >/dev/null 2>&1 || return 1
+  command -v docker >/dev/null 2>&1 || {
+    printf '%s\n' ""
+    return 0
+  }
 
   local binary
   for binary in $(software_detection_binaries_for_token "${token}"); do
     [[ -n "${binary}" ]] || continue
     if docker exec "${container_name}" sh -lc "command -v '${binary}' >/dev/null 2>&1" >/dev/null 2>&1; then
-      return 0
+      sources=$(append_discover_source "${sources}" "容器:${container_name}:command -v ${binary}")
     fi
   done
 
   case "${token}" in
     clawpanel|easyclaw)
-      docker exec "${container_name}" sh -lc 'command -v clawpanel >/dev/null 2>&1 || command -v easyclaw >/dev/null 2>&1 || [ -d /root/.openclaw/software/clawpanel ] || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1 && return 0
+      if docker exec "${container_name}" sh -lc 'command -v clawpanel >/dev/null 2>&1 || command -v easyclaw >/dev/null 2>&1 || [ -d /root/.openclaw/software/clawpanel ] || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1; then
+        sources=$(append_discover_source "${sources}" "容器:${container_name}:/root/.openclaw/software/clawpanel")
+      fi
       ;;
     claudecodeui)
-      docker exec "${container_name}" sh -lc 'command -v cloudcli >/dev/null 2>&1 || command -v claude-code-ui >/dev/null 2>&1 || [ -f /root/.openclaw/software/claudecodeui/runtime.env ]' >/dev/null 2>&1 && return 0
+      if docker exec "${container_name}" sh -lc 'command -v cloudcli >/dev/null 2>&1 || command -v claude-code-ui >/dev/null 2>&1 || [ -f /root/.openclaw/software/claudecodeui/runtime.env ]' >/dev/null 2>&1; then
+        sources=$(append_discover_source "${sources}" "容器:${container_name}:/root/.openclaw/software/claudecodeui")
+      fi
       ;;
   esac
 
-  return 1
+  printf '%s\n' "${sources}"
+}
+
+software_token_detected_in_container() {
+  local token="$1"
+  local container_name="$2"
+  [[ -n "$(software_token_sources_in_container "${token}" "${container_name}")" ]]
+}
+
+discover_software_candidates_report() {
+  local container_name="$1"
+  local data_dir="$2"
+  local current_set
+  current_set=$(normalize_software_set "${3:-}")
+  local report=""
+  local token
+
+  for token in ${OPTIONAL_SOFTWARE_ALL}; do
+    token_in_list "${token}" ${current_set} && continue
+    local path_sources container_sources sources_combined
+    path_sources=$(software_token_sources_from_paths "${token}" "${data_dir}")
+    container_sources=$(software_token_sources_in_container "${token}" "${container_name}")
+    sources_combined="${path_sources}"
+    if [[ -n "${container_sources}" ]]; then
+      if [[ -n "${sources_combined}" ]]; then
+        sources_combined="${sources_combined}"$'\n'"${container_sources}"
+      else
+        sources_combined="${container_sources}"
+      fi
+    fi
+    [[ -n "${sources_combined}" ]] || continue
+
+    local -a source_items=()
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      source_items+=("${line}")
+    done <<< "${sources_combined}"
+    local source_desc
+    source_desc=$(join_with_semicolon "${source_items[@]}")
+    local label
+    label=$(optional_software_label "${token}")
+    report=$(append_catalog_line "${report}" "${token}|${label}|${source_desc}")
+  done
+
+  printf '%s\n' "${report}"
+}
+
+discover_software_candidates_set() {
+  local report="$1"
+  local out=""
+  local line token label source
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    IFS='|' read -r token label source <<< "${line}"
+    [[ -n "${token}" ]] || continue
+    if ! token_in_list "${token}" ${out}; then
+      out="${out}${out:+ }${token}"
+    fi
+  done <<< "${report}"
+  normalize_software_set "${out}"
+}
+
+render_software_discover_report() {
+  local report="$1"
+  [[ -n "${report}" ]] || {
+    printf '未发现候选软件\n'
+    return 0
+  }
+  local output=""
+  local line token label source
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    IFS='|' read -r token label source <<< "${line}"
+    [[ -n "${token}" ]] || continue
+    output="${output}${output:+$'\n'}- ${label}（${token}） | 来源: ${source}"
+  done <<< "${report}"
+  printf '%s\n' "${output}"
 }
 
 discover_software_set() {
@@ -545,14 +668,12 @@ discover_software_set() {
   local current_set
   current_set=$(normalize_software_set "${3:-}")
   local discovered="${current_set}"
-  local token
-
-  for token in ${OPTIONAL_SOFTWARE_ALL}; do
-    token_in_list "${token}" ${discovered} && continue
-    if software_token_detected_from_paths "${token}" "${data_dir}" || software_token_detected_in_container "${token}" "${container_name}"; then
-      discovered="${discovered}${discovered:+ }${token}"
-    fi
-  done
+  local report discovered_delta
+  report=$(discover_software_candidates_report "${container_name}" "${data_dir}" "${current_set}")
+  discovered_delta=$(discover_software_candidates_set "${report}")
+  if [[ -n "${discovered_delta}" ]]; then
+    discovered=$(normalize_software_set "${current_set} ${discovered_delta}")
+  fi
 
   normalize_software_set "${discovered}"
 }
