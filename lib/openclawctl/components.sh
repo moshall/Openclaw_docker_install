@@ -426,6 +426,137 @@ ${item_lines}
 EOF
 }
 
+software_detection_binaries_for_token() {
+  local token="$1"
+  local kind arg1 arg2
+  kind=$(catalog_field_for_id "software" "${token}" "kind")
+  arg1=$(catalog_field_for_id "software" "${token}" "arg1")
+  arg2=$(catalog_field_for_id "software" "${token}" "arg2")
+
+  case "${kind}" in
+    npm_package)
+      if [[ -n "${arg2}" ]]; then
+        printf '%s\n' "${arg2}"
+      elif [[ -n "${arg1}" ]]; then
+        printf '%s\n' "${arg1##*/}"
+      else
+        printf '%s\n' "${token}"
+      fi
+      ;;
+    gh_binary)
+      printf '%s\n' "gh"
+      ;;
+    notebooklm)
+      printf '%s\n' "notebooklm"
+      ;;
+    clawpanel|easyclaw)
+      printf '%s\n' "clawpanel"
+      printf '%s\n' "easyclaw"
+      ;;
+    claudecodeui)
+      printf '%s\n' "cloudcli"
+      printf '%s\n' "claude-code-ui"
+      printf '%s\n' "task-master"
+      printf '%s\n' "task-master-ai"
+      printf '%s\n' "claudecodeui-start"
+      ;;
+    guidance)
+      printf '%s\n' "${token}"
+      ;;
+    *)
+      if [[ -n "${arg2}" ]]; then
+        printf '%s\n' "${arg2}"
+      else
+        printf '%s\n' "${token}"
+      fi
+      ;;
+  esac
+}
+
+software_token_detected_from_paths() {
+  local token="$1"
+  local data_dir="$2"
+  local binary
+  local -a path_candidates=(
+    "${data_dir}/software/bin"
+    "${data_dir}/runtime/root-local-bin"
+    "${data_dir}/runtime/path-shims"
+    "${data_dir}/.openclaw/software/bin"
+  )
+
+  for binary in $(software_detection_binaries_for_token "${token}"); do
+    [[ -n "${binary}" ]] || continue
+    local base
+    for base in "${path_candidates[@]}"; do
+      if [[ -x "${base}/${binary}" ]]; then
+        return 0
+      fi
+    done
+  done
+
+  case "${token}" in
+    clawpanel|easyclaw)
+      [[ -d "${data_dir}/software/clawpanel" || -f "${data_dir}/software/clawpanel/install.sh" || -d "${data_dir}/.openclaw/software/clawpanel" ]] && return 0
+      ;;
+    claudecodeui)
+      [[ -d "${data_dir}/software/claudecodeui" || -f "${data_dir}/software/claudecodeui/runtime.env" || -d "${data_dir}/.openclaw/software/claudecodeui" ]] && return 0
+      ;;
+  esac
+
+  return 1
+}
+
+software_token_detected_in_container() {
+  local token="$1"
+  local container_name="$2"
+
+  [[ -n "${container_name}" ]] || return 1
+  if [[ -n "${OPENCLAWCTL_TEST_DISCOVERED_SOFTWARE:-}" ]]; then
+    token_in_list "${token}" ${OPENCLAWCTL_TEST_DISCOVERED_SOFTWARE} && return 0
+  fi
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 1
+  fi
+  command -v docker >/dev/null 2>&1 || return 1
+
+  local binary
+  for binary in $(software_detection_binaries_for_token "${token}"); do
+    [[ -n "${binary}" ]] || continue
+    if docker exec "${container_name}" sh -lc "command -v '${binary}' >/dev/null 2>&1" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+
+  case "${token}" in
+    clawpanel|easyclaw)
+      docker exec "${container_name}" sh -lc 'command -v clawpanel >/dev/null 2>&1 || command -v easyclaw >/dev/null 2>&1 || [ -d /root/.openclaw/software/clawpanel ] || [ -e /root/.openclaw/software/easyclaw/install.sh ]' >/dev/null 2>&1 && return 0
+      ;;
+    claudecodeui)
+      docker exec "${container_name}" sh -lc 'command -v cloudcli >/dev/null 2>&1 || command -v claude-code-ui >/dev/null 2>&1 || [ -f /root/.openclaw/software/claudecodeui/runtime.env ]' >/dev/null 2>&1 && return 0
+      ;;
+  esac
+
+  return 1
+}
+
+discover_software_set() {
+  local container_name="$1"
+  local data_dir="$2"
+  local current_set
+  current_set=$(normalize_software_set "${3:-}")
+  local discovered="${current_set}"
+  local token
+
+  for token in ${OPTIONAL_SOFTWARE_ALL}; do
+    token_in_list "${token}" ${discovered} && continue
+    if software_token_detected_from_paths "${token}" "${data_dir}" || software_token_detected_in_container "${token}" "${container_name}"; then
+      discovered="${discovered}${discovered:+ }${token}"
+    fi
+  done
+
+  normalize_software_set "${discovered}"
+}
+
 load_software_profile() {
   local data_dir="$1"
   local profile

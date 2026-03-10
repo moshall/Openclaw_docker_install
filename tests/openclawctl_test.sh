@@ -110,6 +110,10 @@ assert_contains "${components_config_manifest_output}" "\"software_manifest\": \
 assert_contains "${components_config_manifest_output}" "\"clawpanel\""
 assert_contains "${components_config_manifest_output}" "\"obsidian-skills\""
 
+# 0f5) components helpers should discover software from persisted paths when profile is missing
+components_discover_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; data_dir=$(mktemp -d); trap "rm -rf \"${data_dir}\"" EXIT; mkdir -p "${data_dir}/software/bin" "${data_dir}/runtime/root-local-bin" "${data_dir}/runtime/path-shims"; touch "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; chmod +x "${data_dir}/software/bin/codex" "${data_dir}/runtime/root-local-bin/gh" "${data_dir}/runtime/path-shims/clawpanel"; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; discover_software_set "openclaw_discover_demo" "${data_dir}" ""' 2>&1 || true)
+assert_contains "${components_discover_output}" "gh codex clawpanel"
+
 # 0g) deps helpers should expose runtime dependency checker workflow
 deps_manage_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=1; DEFAULT_DEP_SET="npm uv"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/deps.sh"; manage_container_runtime_deps "openclaw_deps_test" "check" "npm uv go"' 2>&1 || true)
 assert_contains "${deps_manage_output}" "开始检测容器依赖: npm uv go"
@@ -1072,6 +1076,37 @@ assert_contains "${wizard_upgrade_profile_output}" "检测到已保存的软件�
 assert_contains "${wizard_upgrade_profile_output}" "已自动开启升级后依赖补齐流程"
 assert_contains "${wizard_upgrade_profile_output}" "开始检测容器依赖: npm uv python3"
 assert_contains "${wizard_upgrade_profile_output}" "docker exec openclaw_upgrade_profile bash -lc <software-notebooklm-install-script>"
+
+# 28b) upgrade should discover software from persisted paths when profile is absent
+upgrade_discover_data_dir="${tmpdir}/openclaw_upgrade_discover"
+mkdir -p "${upgrade_discover_data_dir}/software/bin"
+cat > "${upgrade_discover_data_dir}/software/bin/notebooklm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${upgrade_discover_data_dir}/software/bin/notebooklm"
+wizard_upgrade_discover_cfg="${tmpdir}/upgrade-discover.cfg"
+cat > "${wizard_upgrade_discover_cfg}" <<EOF
+NAME=openclaw_upgrade_discover
+SOURCE_CHOICE=2
+CHANNEL_CHOICE=1
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4341
+CONTAINER_PORT=18789
+DATA_DIR=${upgrade_discover_data_dir}
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+EASY_CHOICE=2
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+wizard_upgrade_discover_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard upgrade --config-file "${wizard_upgrade_discover_cfg}")
+assert_contains "${wizard_upgrade_discover_output}" "检测到已发现但未登记的软件，升级后将自动保活"
+assert_contains "${wizard_upgrade_discover_output}" "开始检测容器依赖: npm uv python3"
+assert_contains "${wizard_upgrade_discover_output}" "docker exec openclaw_upgrade_discover bash -lc <software-notebooklm-install-script>"
 
 # 29) persist should auto avoid clawpanel web host-port conflicts
 persist_conflict_cfg="${tmpdir}/persist-conflict.cfg"

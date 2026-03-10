@@ -145,13 +145,26 @@ execute_upgrade_plan() {
   local software_set
   local skill_set
   local requested_image="${image}"
+  local discovered_software_set
+  local software_discovered_delta=0
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
+  discovered_software_set=$(discover_software_set "${name}" "${data_dir}" "${software_set}")
+  discovered_software_set=$(normalize_software_set "${discovered_software_set}")
+  if [[ "${discovered_software_set}" != "${software_set}" ]]; then
+    software_discovered_delta=1
+    software_set="${discovered_software_set}"
+    save_software_profile "${data_dir}" "${software_set}"
+  fi
   skill_set=$(load_skill_profile "${data_dir}")
   skill_set=$(normalize_skill_set "${skill_set}")
   if [[ -n "${software_set}" ]]; then
-    log_info "检测到已保存的软件档案，升级后将自动保活: $(software_set_summary "${software_set}")"
+    if [[ "${software_discovered_delta}" -eq 1 ]]; then
+      log_info "检测到已发现但未登记的软件，升级后将自动保活: $(software_set_summary "${software_set}")"
+    else
+      log_info "检测到已保存的软件档案，升级后将自动保活: $(software_set_summary "${software_set}")"
+    fi
     upgrade_dep_set=$(ensure_dep_set_for_software "${upgrade_dep_set}" "${software_set}")
     if [[ "${deps_repair_choice}" != "1" ]]; then
       log_info "已自动开启升级后依赖补齐流程"
@@ -302,13 +315,26 @@ execute_rebuild_plan() {
   local software_set
   local skill_set
   local requested_image="${image}"
+  local discovered_software_set
+  local software_discovered_delta=0
 
   software_set=$(load_software_profile "${data_dir}")
   software_set=$(normalize_software_set "${software_set}")
+  discovered_software_set=$(discover_software_set "${name}" "${data_dir}" "${software_set}")
+  discovered_software_set=$(normalize_software_set "${discovered_software_set}")
+  if [[ "${discovered_software_set}" != "${software_set}" ]]; then
+    software_discovered_delta=1
+    software_set="${discovered_software_set}"
+    save_software_profile "${data_dir}" "${software_set}"
+  fi
   skill_set=$(load_skill_profile "${data_dir}")
   skill_set=$(normalize_skill_set "${skill_set}")
   if [[ -n "${software_set}" ]]; then
-    log_info "检测到已保存的软件档案，重建后将自动保活: $(software_set_summary "${software_set}")"
+    if [[ "${software_discovered_delta}" -eq 1 ]]; then
+      log_info "检测到已发现但未登记的软件，重建后将自动保活: $(software_set_summary "${software_set}")"
+    else
+      log_info "检测到已保存的软件档案，重建后将自动保活: $(software_set_summary "${software_set}")"
+    fi
     rebuild_dep_set=$(ensure_dep_set_for_software "${rebuild_dep_set}" "${software_set}")
     if [[ "${deps_repair_choice}" != "1" ]]; then
       log_info "已自动开启重建后依赖补齐流程"
