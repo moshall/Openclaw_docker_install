@@ -82,6 +82,173 @@ is_host_port_available() {
   return 0
 }
 
+discovered_config_mounts_path() {
+  local data_dir="$1"
+  echo "${data_dir}/runtime/discovered-config.mounts"
+}
+
+persist_trim_spaces() {
+  local raw="${1:-}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  printf '%s\n' "${raw}"
+}
+
+discovered_config_host_rel_for_container_path() {
+  local container_path="$1"
+  container_path=$(normalize_path_for_compare "${container_path}")
+  printf 'runtime/discovered-config%s\n' "${container_path}"
+}
+
+append_unique_lines() {
+  local current="$1"
+  local candidate="$2"
+  [[ -n "${candidate}" ]] || {
+    printf '%s\n' "${current}"
+    return 0
+  }
+  if [[ -z "${current}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ "${line}" == "${candidate}" ]] && {
+      printf '%s\n' "${current}"
+      return 0
+    }
+  done <<< "${current}"
+  printf '%s\n%s\n' "${current}" "${candidate}"
+}
+
+is_excluded_discovered_config_path() {
+  local path="$1"
+  case "${path}" in
+    /root/.openclaw|/root/.local|/root/.cache|/root/.npm|/root/.cargo|/root/.rustup|/root/.config|/root/.ssh|/root/.docker|/root/.aws|/root/.kube|/root/.gitconfig|/root/.netrc|/root/.npmrc|/root/.pypirc|/root/.bash_history|/root/.bashrc|/root/.bash_logout|/root/.profile|/root/.zshrc|/root/.zprofile|/root/.wget-hsts|/root/.python_history)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+discover_additional_config_paths() {
+  local container_name="$1"
+  local raw=""
+  local out=""
+
+  if [[ -n "${OPENCLAWCTL_TEST_DISCOVERED_CONFIG_PATHS:-}" ]]; then
+    raw=$(printf '%s\n' "${OPENCLAWCTL_TEST_DISCOVERED_CONFIG_PATHS}" | tr ',' '\n')
+  else
+    [[ -n "${container_name}" ]] || {
+      printf '%s\n' ""
+      return 0
+    }
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      printf '%s\n' ""
+      return 0
+    fi
+    command -v docker >/dev/null 2>&1 || {
+      printf '%s\n' ""
+      return 0
+    }
+    raw=$(docker exec "${container_name}" sh -lc 'find /root -maxdepth 1 -mindepth 1 -name ".*" 2>/dev/null | sort -u' 2>/dev/null || true)
+  fi
+
+  local path
+  while IFS= read -r path; do
+    path=$(persist_trim_spaces "${path}")
+    [[ -n "${path}" ]] || continue
+    [[ "${path}" == /root/.* ]] || continue
+    is_excluded_discovered_config_path "${path}" && continue
+    out=$(append_unique_lines "${out}" "$(normalize_path_for_compare "${path}")")
+  done <<< "${raw}"
+
+  printf '%s\n' "${out}"
+}
+
+list_discovered_config_mount_pairs() {
+  local data_dir="$1"
+  local mounts_file
+  mounts_file=$(discovered_config_mounts_path "${data_dir}")
+  [[ -f "${mounts_file}" ]] || return 0
+
+  local line container_path host_rel host_abs
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    IFS='|' read -r container_path host_rel <<< "${line}"
+    container_path=$(persist_trim_spaces "${container_path}")
+    host_rel=$(persist_trim_spaces "${host_rel}")
+    [[ -n "${container_path}" && -n "${host_rel}" ]] || continue
+    [[ "${container_path}" == /root/* ]] || continue
+    host_abs="${data_dir}/${host_rel}"
+    if [[ "${DRY_RUN}" -eq 0 && ! -e "${host_abs}" ]]; then
+      continue
+    fi
+    printf '%s|%s\n' "${host_abs}" "${container_path}"
+  done < "${mounts_file}"
+}
+
+save_discovered_config_mounts() {
+  local data_dir="$1"
+  local entries="$2"
+  local mounts_file
+  mounts_file=$(discovered_config_mounts_path "${data_dir}")
+
+  if [[ -z "${entries}" ]]; then
+    return 0
+  fi
+
+  run_cmd mkdir -p "$(dirname "${mounts_file}")"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log_info "[迁移] 额外配置挂载清单将写入: ${mounts_file}"
+    return 0
+  fi
+
+  printf '%s\n' "${entries}" > "${mounts_file}"
+}
+
+collect_and_migrate_discovered_config_paths() {
+  local container_name="$1"
+  local data_dir="$2"
+  local discovered_paths
+  discovered_paths=$(discover_additional_config_paths "${container_name}")
+  [[ -n "${discovered_paths}" ]] || return 0
+
+  log_info "[迁移] 发现额外配置路径候选（将写入清单并迁移）"
+
+  local entries=""
+  local path
+  while IFS= read -r path; do
+    path=$(persist_trim_spaces "${path}")
+    [[ -n "${path}" ]] || continue
+    [[ "${path}" == /root/* ]] || continue
+
+    local host_rel host_abs
+    host_rel=$(discovered_config_host_rel_for_container_path "${path}")
+    host_abs="${data_dir}/${host_rel}"
+    validate_runtime_target_path "${data_dir}" "${host_abs}" || return 1
+
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      run_cmd mkdir -p "$(dirname "${host_abs}")"
+      run_cmd docker cp "${container_name}:${path}" "${host_abs}"
+      entries=$(append_unique_lines "${entries}" "${path}|${host_rel}")
+      continue
+    fi
+
+    if docker exec "${container_name}" sh -lc "test -d '${path}'" >/dev/null 2>&1; then
+      copy_dir_from_container_to_host "${container_name}" "${path}" "${host_abs}" "config:${path}" || return 1
+      entries=$(append_unique_lines "${entries}" "${path}|${host_rel}")
+      continue
+    fi
+    if docker exec "${container_name}" sh -lc "test -f '${path}'" >/dev/null 2>&1; then
+      copy_file_from_container_to_host "${container_name}" "${path}" "${host_abs}" "config:${path}" || return 1
+      entries=$(append_unique_lines "${entries}" "${path}|${host_rel}")
+      continue
+    fi
+  done <<< "${discovered_paths}"
+
+  save_discovered_config_mounts "${data_dir}" "${entries}"
+}
+
 copy_dir_from_container_to_host() {
   local container_name="$1"
   local src_dir="$2"
@@ -398,6 +565,8 @@ pre_upgrade_migrate_runtime_data() {
     if ! should_skip_migration_for_path "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc"; then
       copy_file_from_container_to_host "${container_name}" "/root/.pypirc" "${target_root_pypirc}" "env:/root/.pypirc" || return 1
     fi
+
+    collect_and_migrate_discovered_config_paths "${container_name}" "${data_dir}" || return 1
   fi
 
   if [[ "${enable_apt_cfg_persist}" == "1" ]]; then

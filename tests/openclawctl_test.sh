@@ -79,6 +79,13 @@ EOF
 chmod +x "${tmpdir}/docker"; export PATH="${tmpdir}:${PATH}"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; if should_enable_easyclaw_web_port "0" "openclaw_detect_demo" ""; then echo "enabled"; else echo "disabled"; fi' 2>&1 || true)
 assert_contains "${persist_clawpanel_detect_output}" "enabled"
 
+# 0e3) persist helper should discover additional config paths (excluding built-in mounts)
+persist_discovered_config_paths_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DRY_RUN=0; OPENCLAWCTL_TEST_DISCOVERED_CONFIG_PATHS="/root/.claude,/root/.codex,/root/.config,/root/.openclaw"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/persist.sh"; discover_additional_config_paths "openclaw_detect_demo"' 2>&1 || true)
+assert_contains "${persist_discovered_config_paths_output}" "/root/.claude"
+assert_contains "${persist_discovered_config_paths_output}" "/root/.codex"
+assert_not_contains "${persist_discovered_config_paths_output}" "/root/.config"
+assert_not_contains "${persist_discovered_config_paths_output}" "/root/.openclaw"
+
 # 0f) components helpers should load optional catalog and resolve labels
 components_catalog_output=$(SCRIPT_DIR="${SCRIPT_HOME}" bash -c 'set -euo pipefail; DEFAULT_OPTIONAL_SOFTWARE_ALL="gh claude codex opencode gemini notebooklm clawpanel claudecodeui obsidian ralph"; DEFAULT_OPTIONAL_SKILL_ALL="obsidian-skills security-checker"; OPTIONAL_SOFTWARE_ALL="${DEFAULT_OPTIONAL_SOFTWARE_ALL}"; OPTIONAL_SKILL_ALL="${DEFAULT_OPTIONAL_SKILL_ALL}"; OPTIONAL_SOFTWARE_CATALOG=""; OPTIONAL_SKILL_CATALOG=""; OPTIONAL_COMPONENTS_FILE="${SCRIPT_DIR}/config/optional-components.conf"; source "${SCRIPT_DIR}/lib/openclawctl/common.sh"; source "${SCRIPT_DIR}/lib/openclawctl/io.sh"; source "${SCRIPT_DIR}/lib/openclawctl/components.sh"; load_optional_component_catalog; optional_software_label "clawpanel"' 2>&1 || true)
 assert_contains "${components_catalog_output}" "ClawPanel"
@@ -913,6 +920,30 @@ assert_contains "${persist_discover_output}" "软件发现候选（扫描报告�
 assert_contains "${persist_discover_output}" "发现候选软件后处理方式"
 assert_contains "${persist_discover_output}" "本次已忽略候选软件，不纳入保活清单"
 assert_not_contains "${persist_discover_output}" "docker exec openclaw_persist_discover bash -lc <software-notebooklm-install-script>"
+
+# 21d) rebuild should mount discovered config paths from manifest
+discovered_cfg_data_dir="${tmpdir}/openclaw_discovered_cfg"
+mkdir -p "${discovered_cfg_data_dir}/runtime/discovered-config/root/.claude" "${discovered_cfg_data_dir}/runtime"
+cat > "${discovered_cfg_data_dir}/runtime/discovered-config.mounts" <<'EOF'
+/root/.claude|runtime/discovered-config/root/.claude
+EOF
+rebuild_discovered_cfg="${tmpdir}/rebuild-discovered-cfg.cfg"
+cat > "${rebuild_discovered_cfg}" <<EOF
+NAME=openclaw_discovered_cfg
+IMAGE=ghcr.io/1186258278/openclaw-zh:latest
+HOST_PORT=4343
+CONTAINER_PORT=18789
+DATA_DIR=${discovered_cfg_data_dir}
+BIN_PERSIST_CHOICE=1
+ENV_PERSIST_CHOICE=1
+APT_CFG_PERSIST_CHOICE=1
+CACHE_PERSIST_CHOICE=1
+DEPS_INSTALL_CHOICE=2
+TARGET_DEPS=npm uv
+EXTRA_PORTS=
+EOF
+rebuild_discovered_cfg_output=$(bash "${SCRIPT_PATH}" --dry-run --wizard rebuild --config-file "${rebuild_discovered_cfg}")
+assert_contains "${rebuild_discovered_cfg_output}" "/runtime/discovered-config/root/.claude:/root/.claude"
 
 # 21b) upgrade should migrate legacy root layout into structured .openclaw before recreate
 legacy_layout_dir="${tmpdir}/openclaw_legacy_layout"

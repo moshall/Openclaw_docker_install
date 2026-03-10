@@ -801,6 +801,15 @@ run_gateway_container() {
     volume_args+=("-v" "${data_dir}/runtime/root-netrc:/root/.netrc")
     volume_args+=("-v" "${data_dir}/runtime/root-npmrc:/root/.npmrc")
     volume_args+=("-v" "${data_dir}/runtime/root-pypirc:/root/.pypirc")
+
+    local discovered_pair discovered_host discovered_container
+    while IFS= read -r discovered_pair; do
+      [[ -n "${discovered_pair}" ]] || continue
+      discovered_host="${discovered_pair%%|*}"
+      discovered_container="${discovered_pair#*|}"
+      [[ -n "${discovered_host}" && -n "${discovered_container}" ]] || continue
+      volume_args+=("-v" "${discovered_host}:${discovered_container}")
+    done < <(list_discovered_config_mount_pairs "${data_dir}")
   fi
 
   if [[ "${enable_apt_cfg_persist}" == "1" ]]; then
@@ -916,6 +925,15 @@ compose_collect_volume_mappings() {
     printf '%s\n' "${data_dir}/runtime/root-netrc:/root/.netrc"
     printf '%s\n' "${data_dir}/runtime/root-npmrc:/root/.npmrc"
     printf '%s\n' "${data_dir}/runtime/root-pypirc:/root/.pypirc"
+
+    local discovered_pair discovered_host discovered_container
+    while IFS= read -r discovered_pair; do
+      [[ -n "${discovered_pair}" ]] || continue
+      discovered_host="${discovered_pair%%|*}"
+      discovered_container="${discovered_pair#*|}"
+      [[ -n "${discovered_host}" && -n "${discovered_container}" ]] || continue
+      printf '%s\n' "${discovered_host}:${discovered_container}"
+    done < <(list_discovered_config_mount_pairs "${data_dir}")
   fi
 
   if [[ "${enable_apt_cfg_persist}" == "1" ]]; then

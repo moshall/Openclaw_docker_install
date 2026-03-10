@@ -922,6 +922,7 @@ save_config_manifest() {
   "config_paths": [
     {"id":"workspace-skills","path":"workspace/skills","purpose":"skills"},
     {"id":"software-root","path":"software","purpose":"software_home"},
+    {"id":"runtime-discovered-config","path":"runtime/discovered-config.mounts","purpose":"extra_config_mounts_manifest"},
     {"id":"runtime-path-decls","path":"runtime/path-decls/openclaw-runtime-path.sh","purpose":"runtime_path_declarations"},
     {"id":"runtime-path-shims","path":"runtime/path-shims","purpose":"runtime_path_shims"}
   ]
